@@ -1,7 +1,7 @@
 const fs=require("fs"),path=require("path"),crypto=require("crypto");
 const EXPECTED={
  ARIS_9_5:{file:"targets/ARIS-v9.5.md",sha256:"f214b1e598a0c9aa19558a9fd1572555a2abebaaf770d0e3f1e8b41379ece425"},
- ARIS_SUPER_1_3:{file:"targets/ARIS-SUPER-v1.3.md",sha256:"ce564eb1de70474f999595e6980e673903d228a8decac098f29f7ceba6f65c4a"}
+ ARIS_SUPER_1_3:{file:"targets/ARIS_SUPER_v1.3_EMPIRICAL_RUNTIME_CLOSURE_DESIGN_CANDIDATE_EN.md",sha256:"ce564eb1de70474f999595e6980e673903d228a8decac098f29f7ceba6f65c4a"}
 };
 const sha=b=>crypto.createHash("sha256").update(b).digest("hex");
 const mono=()=>Number(process.hrtime.bigint()/1000000n);
