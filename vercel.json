@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/benchmark.js": {
+      "includeFiles": "targets/**"
+    }
+  }
+}
