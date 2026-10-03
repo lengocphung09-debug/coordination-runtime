@@ -1,0 +1,21 @@
+name: Fresh Spelling Holdout
+on:
+  push:
+    branches: [fresh-spelling-holdout]
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 -o 6000.csv "https://raw.githubusercontent.com/tranhamduong/Vietnamese-Spelling-Correction-testset/main/6000.csv"
+          sha256sum 6000.csv > SHA256SUMS.txt
+          wc -c -l 6000.csv > SIZE_ROWS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fresh-spelling-holdout
+          path: |
+            6000.csv
+            SHA256SUMS.txt
+            SIZE_ROWS.txt
+          retention-days: 1
