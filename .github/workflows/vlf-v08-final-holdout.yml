@@ -1,0 +1,22 @@
+name: VLF v08 Final Holdout Transport
+on:
+  push:
+    branches: [vlf-v08-final-holdout]
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/WhySchools/VMDS-vietnamese-misspell-dataset-from-Social-media/main/Dataset/dataset.csv"
+          curl -L --fail --retry 3 -o VMDS_dataset.csv "$url"
+          sha256sum VMDS_dataset.csv > SHA256SUMS.txt
+          wc -c -l VMDS_dataset.csv > SIZE_ROWS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v08-final-holdout
+          path: |
+            VMDS_dataset.csv
+            SHA256SUMS.txt
+            SIZE_ROWS.txt
+          retention-days: 1
