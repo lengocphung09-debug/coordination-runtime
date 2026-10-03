@@ -1,0 +1,25 @@
+name: VSEC Free Transport
+on:
+  push:
+    branches: [vsec-free-transport]
+  workflow_dispatch:
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download VSEC transport copy
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 -o VSEC_test.csv "https://huggingface.co/datasets/ura-hcmut/VSEC/resolve/main/VSEC_test.csv?download=true"
+          sha256sum VSEC_test.csv | tee SHA256SUMS.txt
+          wc -c -l VSEC_test.csv | tee SIZE_ROWS.txt
+      - name: Upload VSEC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsec-transport
+          path: |
+            VSEC_test.csv
+            SHA256SUMS.txt
+            SIZE_ROWS.txt
+          if-no-files-found: error
+          retention-days: 1
