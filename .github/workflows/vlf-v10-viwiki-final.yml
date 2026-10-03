@@ -1,0 +1,21 @@
+name: VLF v10 Viwiki Final
+on:
+  push:
+    branches: [vlf-v10-viwiki-final]
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 -o spelling_test.json "https://raw.githubusercontent.com/heraclex12/Viwiki-spelling/main/spelling_test.json"
+          sha256sum spelling_test.json > SHA256SUMS.txt
+          wc -c spelling_test.json > SIZE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v10-viwiki-final
+          path: |
+            spelling_test.json
+            SHA256SUMS.txt
+            SIZE.txt
+          retention-days: 1
