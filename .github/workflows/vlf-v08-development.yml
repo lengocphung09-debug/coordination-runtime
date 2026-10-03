@@ -1,0 +1,22 @@
+name: VLF v08 Development Transport
+on:
+  push:
+    branches: [vlf-v08-development]
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/ngxtnhi/ViLexNorm/main/data"
+          curl -L --fail -o vilex_train.csv "$base/train.csv"
+          curl -L --fail -o vilex_dev.csv "$base/dev.csv"
+          sha256sum vilex_train.csv vilex_dev.csv > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v08-development
+          path: |
+            vilex_train.csv
+            vilex_dev.csv
+            SHA256SUMS.txt
+          retention-days: 1
