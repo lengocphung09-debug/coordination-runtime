@@ -26,17 +26,30 @@ jobs:
       - name: Prepare raw test sentences
         run: |
           python3 - <<'PY'
-          import re, pathlib
+          import pathlib
           p=next(pathlib.Path("ud").glob("*test.conllu"))
-          out=[]
-          for line in p.read_text(encoding="utf-8").splitlines():
-              if line.startswith("# text = "): out.append(line[9:])
-          pathlib.Path("input.txt").write_text("\n".join(out)+"\n",encoding="utf-8")
-          pathlib.Path("evidence/test_sentence_count.txt").write_text(str(len(out)))
+          sents=[]; cur=[]
+          for line in p.read_text(encoding="utf-8").splitlines()+[""]:
+              if not line.strip():
+                  if cur:
+                      text=""
+                      for form,misc in cur:
+                          text += form
+                          if "SpaceAfter=No" not in misc: text += " "
+                      sents.append(text.rstrip()); cur=[]
+              elif not line.startswith("#"):
+                  cols=line.split("\t")
+                  if cols[0].isdigit():
+                      cur.append((cols[1], cols[9] if len(cols)>9 else "_"))
+          assert sents, "no reconstructed sentences"
+          pathlib.Path("input.txt").write_text("\n".join(sents)+"\n",encoding="utf-8")
+          pathlib.Path("evidence/test_sentence_count.txt").write_text(str(len(sents)))
+          print("reconstructed",len(sents),"sentences")
           PY
       - name: Run independent VnCoreNLP predictions
         run: |
           java -Xmx2g -jar vncorenlp/VnCoreNLP-1.2.jar -fin input.txt -fout predictions.txt -annotators wseg,pos,parse
+          test -s predictions.txt
           cp predictions.txt evidence/predictions.txt
           sha256sum input.txt predictions.txt >> evidence/resource_sha256.txt
       - name: Score bounded segmentation and aligned UAS
@@ -60,7 +73,10 @@ jobs:
               elif not line.startswith("#"):
                   c=line.split("\t")
                   if len(c)>=7 and c[0].isdigit(): cur.append(c)
-          n=min(len(gs),len(ps)); exact=0; uas_num=uas_den=0
+          assert len(gs)>0, "gold empty"
+          assert len(ps)>0, "predictions empty"
+          assert len(gs)==len(ps), f"sentence-count mismatch gold={len(gs)} pred={len(ps)}"
+          n=len(gs); exact=0; uas_num=uas_den=0
           for g,p in zip(gs[:n],ps[:n]):
               gf=[x[1] for x in g]; pf=[x[1] for x in p]
               # VnCore multi-syllable words use underscores; UD VTB commonly uses underscores too.
@@ -79,7 +95,7 @@ jobs:
                   "exact_token_sequence_rate":exact/n if n else None,
                   "aligned_uas_n":uas_den,"aligned_uas":uas_num/uas_den if uas_den else None,
                   "construct_limits":"UAS only on sentences with exact token sequence; LAS not scored because VnCoreNLP and UD relation label inventories are not assumed identical.",
-                  "empirical_state":"MEASURED_BOUNDED_EXTERNAL_ENGINE"}
+                  "empirical_state":"MEASURED_BOUNDED_EXTERNAL_ENGINE" if n and len(ps)==len(gs) else "INVALID_NOT_MEASURED"}
           pathlib.Path("evidence/UD_VTB_VNCORENLP_REPORT.json").write_text(json.dumps(report,indent=2))
           print(json.dumps(report,indent=2))
           PY
