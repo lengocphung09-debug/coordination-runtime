@@ -1,0 +1,66 @@
+name: vlf-v16-vianli-nli
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned inference stack
+        run: pip install "torch==2.7.1" "transformers==4.53.2" "safetensors>=0.4.3" "scikit-learn==1.7.1" requests
+      - name: Run independent ViANLI SUT
+        run: |
+          python - <<'PY'
+          import json,requests,hashlib,pathlib,torch
+          from transformers import AutoTokenizer,AutoModelForSequenceClassification
+          from sklearn.metrics import accuracy_score,f1_score,confusion_matrix,classification_report
+          MODEL="Inori612/phobert-base-vianli-ph"
+          DATA="https://huggingface.co/datasets/uitnlp/ViANLI/resolve/main/vianli_test.jsonl"
+          raw=requests.get(DATA,timeout=60); raw.raise_for_status()
+          pathlib.Path("vianli_test.jsonl").write_bytes(raw.content)
+          rows=[json.loads(x) for x in raw.text.splitlines() if x.strip()]
+          assert len(rows)==1000
+          tok=AutoTokenizer.from_pretrained(MODEL)
+          model=AutoModelForSequenceClassification.from_pretrained(MODEL); model.eval()
+          print("id2label",model.config.id2label,"label2id",model.config.label2id)
+          # Fail closed if model does not expose semantic NLI labels.
+          id2={int(k):str(v).lower() for k,v in model.config.id2label.items()}
+          semantic={"entailment","neutral","contradiction"}
+          if set(id2.values())!=semantic:
+              raise RuntimeError("NON_SEMANTIC_LABEL_MAPPING:"+json.dumps(id2))
+          preds=[]; probs=[]
+          for i in range(0,len(rows),16):
+              b=rows[i:i+16]
+              enc=tok([x["premise"] for x in b],[x["hypothesis"] for x in b],padding=True,truncation=True,max_length=256,return_tensors="pt")
+              with torch.no_grad(): logits=model(**enc).logits
+              pr=logits.argmax(-1).tolist(); preds += [id2[x] for x in pr]
+              probs += torch.softmax(logits,-1).max(-1).values.tolist()
+          gold=[str(x["label"]).lower() for x in rows]
+          assert set(gold)<=semantic
+          report={"n":len(rows),"model":MODEL,"id2label":id2,
+            "accuracy":accuracy_score(gold,preds),
+            "macro_f1":f1_score(gold,preds,average="macro"),
+            "confusion_matrix_labels":["entailment","neutral","contradiction"],
+            "confusion_matrix":confusion_matrix(gold,preds,labels=["entailment","neutral","contradiction"]).tolist(),
+            "classification_report":classification_report(gold,preds,labels=["entailment","neutral","contradiction"],output_dict=True,zero_division=0),
+            "mean_max_probability":sum(probs)/len(probs),
+            "dataset_sha256":hashlib.sha256(raw.content).hexdigest(),
+            "construct":"3-way Vietnamese adversarial NLI only",
+            "empirical_state":"MEASURED_BOUNDED_INDEPENDENT_SUT"}
+          pathlib.Path("evidence").mkdir(exist_ok=True)
+          pathlib.Path("evidence/VIANLI_NLI_REPORT.json").write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          with open("evidence/predictions.jsonl","w") as f:
+              for r,p,q in zip(rows,preds,probs): f.write(json.dumps({"uid":r["uid"],"gold":r["label"],"prediction":p,"confidence":q},ensure_ascii=False)+"\n")
+          pathlib.Path("evidence/model_config.json").write_text(model.config.to_json_string())
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v16-vianli-nli-evidence
+          path: evidence/
