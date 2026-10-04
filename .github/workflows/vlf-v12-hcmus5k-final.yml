@@ -24,7 +24,7 @@ jobs:
             curl -L --fail --retry 3 -o "test_$i.parquet" "$u"
             i=$((i+1))
           done < URLS.txt
-          sha256sum test_*.parquet > SHA256SUMS.txt
+          sha256sum test_*.parquet > SHA256SUMS.txt\n          python -m pip install -q pyarrow pandas\n          python - <<'PY'\n          import pandas as pd,glob\n          d=pd.concat([pd.read_parquet(f) for f in sorted(glob.glob('test_*.parquet'))],ignore_index=True)\n          d.to_csv('test.csv',index=False)\n          print('ROWS',len(d),'COLS',list(d.columns))\n          PY\n          sha256sum test.csv > CSV_SHA256.txt
           wc -c test_*.parquet > SIZE.txt
       - uses: actions/upload-artifact@v4
         with:
@@ -33,5 +33,5 @@ jobs:
             test_*.parquet
             SHA256SUMS.txt
             SIZE.txt
-            URLS.txt
+            URLS.txt\n            test.csv\n            CSV_SHA256.txt
           retention-days: 1
