@@ -54,50 +54,65 @@ jobs:
           test -s predictions.txt
           cp predictions.txt evidence/predictions.txt
           sha256sum input.txt predictions.txt >> evidence/resource_sha256.txt
-      - name: Score bounded segmentation and aligned UAS
+      - name: Score corpus segmentation and safely aligned UAS
         run: |
           python3 - <<'PY'
-          import pathlib,json,re,hashlib
+          import pathlib,json,re
           gold=next(pathlib.Path("ud").glob("*test.conllu")).read_text(encoding="utf-8")
-          # Gold sentences: integer-ID tokens only.
           gs=[]; cur=[]
           for line in gold.splitlines()+[""]:
               if not line.strip():
                   if cur: gs.append(cur); cur=[]
               elif not line.startswith("#"):
-                  c=line.split("\t")
-                  if c[0].isdigit(): cur.append(c)
-          # VnCoreNLP output is CoNLL-like, blank-line separated.
+                  x=line.split("\t")
+                  if x[0].isdigit(): cur.append(x)
           ps=[]; cur=[]
           for line in pathlib.Path("predictions.txt").read_text(encoding="utf-8").splitlines()+[""]:
               if not line.strip():
                   if cur: ps.append(cur); cur=[]
-              elif not line.startswith("#"):
-                  c=line.split("\t")
-                  if len(c)>=6 and c[0].isdigit(): cur.append(c)
-          assert len(gs)>0, "gold empty"
-          assert len(ps)>0, "predictions empty"
-          assert len(gs)==len(ps), f"sentence-count mismatch gold={len(gs)} pred={len(ps)}"
-          n=len(gs); exact=0; uas_num=uas_den=0
-          for g,p in zip(gs[:n],ps[:n]):
-              gf=[x[1] for x in g]; pf=[x[1] for x in p]
-              # VnCore multi-syllable words use underscores; UD VTB commonly uses underscores too.
-              if gf==pf:
+              else:
+                  x=line.split("\t")
+                  if len(x)>=6 and x[0].isdigit(): cur.append(x)
+          assert gs and ps
+          # Segmentation metric over syllable boundaries, independent of sentence resegmentation.
+          def units(form): return form.replace("_"," ").split()
+          def boundaries(sents):
+              pos=0; B=set(); seq=[]
+              for s in sents:
+                  for row in s:
+                      us=units(row[1])
+                      for u in us: seq.append(u)
+                      pos += len(us); B.add(pos)
+              return seq,B
+          gseq,gb=boundaries(gs); pseq,pb=boundaries(ps)
+          same_stream=(gseq==pseq)
+          if same_stream:
+              tp=len(gb&pb); prec=tp/len(pb) if pb else 1.0; rec=tp/len(gb) if gb else 1.0
+              f1=2*prec*rec/(prec+rec) if prec+rec else 0.0
+          else: prec=rec=f1=None
+          # Greedy surface alignment of sentence blocks; UAS only exact token sequences.
+          def surf(s): return " ".join(u for r in s for u in units(r[1]))
+          j=0; exact=0; uas_num=uas_den=0
+          for g in gs:
+              target=surf(g); acc=""; block=[]
+              while j<len(ps) and len(acc)<len(target):
+                  block += ps[j]; acc=surf([block]); j+=1
+                  if acc==target: break
+              if acc==target and [r[1] for r in g]==[r[1] for r in block]:
                   exact+=1
-                  for a,b in zip(g,p):
-                      try: ph=int(b[5] if len(b)>5 else b[6])
-                      except: 
-                          try: ph=int(b[6])
-                          except: continue
-                      try: gh=int(a[6])
+                  # VnCoreNLP CLI: ID FORM POS NER HEAD DEPREL
+                  for a,b in zip(g,block):
+                      try: gh=int(a[6]); ph=int(b[4])
                       except: continue
-                      uas_den+=1; uas_num+=ph==gh
-          report={"gold_sentences":len(gs),"pred_sentences":len(ps),"paired_sentences":n,
-                  "exact_token_sequence_sentences":exact,
-                  "exact_token_sequence_rate":exact/n if n else None,
-                  "aligned_uas_n":uas_den,"aligned_uas":uas_num/uas_den if uas_den else None,
-                  "construct_limits":"UAS only on sentences with exact token sequence; LAS not scored because VnCoreNLP and UD relation label inventories are not assumed identical.",
-                  "empirical_state":"MEASURED_BOUNDED_EXTERNAL_ENGINE" if n and len(ps)==len(gs) else "INVALID_NOT_MEASURED"}
+                      uas_den+=1; uas_num += (gh==ph)
+          report={"gold_sentences":len(gs),"pred_sentence_blocks":len(ps),
+            "same_underlying_syllable_stream":same_stream,
+            "segmentation_boundary_precision":prec,"segmentation_boundary_recall":rec,"segmentation_boundary_f1":f1,
+            "exact_token_aligned_gold_sentences":exact,
+            "aligned_uas_tokens":uas_den,"aligned_uas":uas_num/uas_den if uas_den else None,
+            "LAS":"NOT_IDENTIFIABLE_PENDING_LABEL_MAPPING",
+            "construct_limits":"Segmentation scored only if underlying syllable stream is identical. UAS scored only on exact-token aligned gold sentences; external-engine adapter evidence, not intrinsic VLF universal syntax capability.",
+            "empirical_state":"MEASURED_BOUNDED_EXTERNAL_ENGINE" if same_stream else "NOT_IDENTIFIABLE_STREAM_MISMATCH"}
           pathlib.Path("evidence/UD_VTB_VNCORENLP_REPORT.json").write_text(json.dumps(report,indent=2))
           print(json.dumps(report,indent=2))
           PY
@@ -115,4 +130,4 @@ jobs:
           cp -f evidence/* empirical-results/ud-vncorenlp/ 2>/dev/null || true
           git add empirical-results/ud-vncorenlp
           git diff --cached --quiet || git commit -m "Persist VLF v1.5 UD VnCoreNLP empirical evidence"
-          git push
+          git push origin HEAD:vlf-v15-ud-vncorenlp
