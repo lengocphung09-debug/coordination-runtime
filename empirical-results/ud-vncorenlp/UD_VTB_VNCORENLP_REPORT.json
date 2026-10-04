@@ -1,0 +1,11 @@
+{
+  "gold_sentences": 800,
+  "pred_sentences": 0,
+  "paired_sentences": 0,
+  "exact_token_sequence_sentences": 0,
+  "exact_token_sequence_rate": null,
+  "aligned_uas_n": 0,
+  "aligned_uas": null,
+  "construct_limits": "UAS only on sentences with exact token sequence; LAS not scored because VnCoreNLP and UD relation label inventories are not assumed identical.",
+  "empirical_state": "MEASURED_BOUNDED_EXTERNAL_ENGINE"
+}
