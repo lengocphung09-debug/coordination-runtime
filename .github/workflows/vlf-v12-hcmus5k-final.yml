@@ -11,12 +11,11 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json,urllib.request
-          u='https://huggingface.co/api/datasets/pqthinh232/vietnamese-correction-60k/parquet/default/test'
+          u='https://huggingface.co/api/datasets/pqthinh232/vietnamese-correction-60k/parquet'
           x=json.load(urllib.request.urlopen(u))
-          urls=x if isinstance(x,list) else x.get('urls',x.get('parquet_files',[]))
-          if urls and isinstance(urls[0],dict): urls=[z.get('url') or z.get('path') for z in urls]
-          open('URLS.txt','w').write('\n'.join(urls))
+          urls=x['default']['test']
           assert urls
+          open('URLS.txt','w').write('\n'.join(urls))
           PY
           i=0
           while IFS= read -r u; do
