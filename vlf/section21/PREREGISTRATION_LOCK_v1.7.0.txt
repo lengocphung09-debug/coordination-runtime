@@ -1,0 +1,29 @@
+VLF-6.8 SECTION-21 GOLD CORPUS MATRIX — PREREGISTRATION LOCK v1.7.0
+Normative basis: Section 21 EMPIRICAL QUALIFICATION AND DOMAIN-STRATIFIED GOLD CORPUS.
+Required strata: 21/21.
+Preregistration SHA-256: dd948ee25489a945976e065cbb3b1f8c55b65acdf3f7d6f888ac9151c5484ff8
+Portable package SHA-256: 8838b22550f477ecab71acc6bf6b54841be5045698cd84038cffc0c7fad0939c
+Sampling seed: dd948ee25489a945
+State at lock: PREREGISTERED_NOT_SAMPLED; G21=NOT_RUN_PREREGISTERED; G30=NOT_RELEASED.
+
+Required strata:
+academic; scientific; legal; administrative; literary; historical; religious; journalistic; social_informal; ocr_noisy; translated; mixed_language; unicode_diacritic_stress; whitespace_layout_stress; long_form; adversarial; noi_lai; wordplay; citation_rich; terminology_dense; structurally_complex.
+
+Final sampling rule: deterministic hash-ranked sampling after eligibility filtering; no SUT-aware selection.
+Gold rule: SUT output cannot create or adjudicate its own gold. Semantic/pragmatic/style constructs require independent human/reference gold. Controlled mutation is admissible only for construct-valid deterministic/mechanical families.
+Uncertainty rule: ambiguous/unadjudicable items become ABSTAIN and remain in denominator reporting.
+Contamination rule: contaminated final items are quarantined and replaced by the next deterministic eligible item with logged reason.
+Aggregation rule: aggregate PASS cannot conceal any mandatory applicable stratum FAIL.
+
+Per-stratum preregistered release-profile thresholds:
+detection precision >= 0.95
+detection recall >= 0.80
+macro-F1 >= 0.85
+accepted repair precision >= 0.95
+exact repair rate >= 0.80
+clean-control harmful-edit rate <= 0.001
+protected-span violation rate = 0
+citation/reference corruption rate = 0
+unsafe non-abstention rate <= 0.005
+
+These thresholds are release-profile targets, not current performance claims. NOT_APPLICABLE requires explicit construct justification. Any mandatory applicable stratum failure keeps G21 FAIL_NOT_TERMINAL.
