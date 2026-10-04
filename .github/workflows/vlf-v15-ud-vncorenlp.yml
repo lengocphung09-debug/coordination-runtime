@@ -96,7 +96,7 @@ jobs:
           for g in gs:
               target=surf(g); acc=""; block=[]
               while j<len(ps) and len(acc)<len(target):
-                  block += ps[j]; acc=surf([block]); j+=1
+                  block += ps[j]; acc=surf(block); j+=1
                   if acc==target: break
               if acc==target and [r[1] for r in g]==[r[1] for r in block]:
                   exact+=1
@@ -121,13 +121,3 @@ jobs:
           name: vlf-v15-ud-vncorenlp-evidence
           path: evidence/
 
-      - name: Persist evidence to branch
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mkdir -p empirical-results/ud-vncorenlp
-          cp -f evidence/* empirical-results/ud-vncorenlp/ 2>/dev/null || true
-          git add empirical-results/ud-vncorenlp
-          git diff --cached --quiet || git commit -m "Persist VLF v1.5 UD VnCoreNLP empirical evidence"
-          git push origin HEAD:vlf-v15-ud-vncorenlp
