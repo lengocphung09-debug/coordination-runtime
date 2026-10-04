@@ -4,6 +4,8 @@ permissions:
 on:
   push:
     branches: [vlf-v15-ud-vncorenlp]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 jobs:
   benchmark:
