@@ -1,4 +1,6 @@
 name: vlf-v15-ud-vncorenlp
+permissions:
+  contents: write
 on:
   push:
     branches: [vlf-v15-ud-vncorenlp]
@@ -85,3 +87,14 @@ jobs:
         with:
           name: vlf-v15-ud-vncorenlp-evidence
           path: evidence/
+
+      - name: Persist evidence to branch
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p empirical-results/ud-vncorenlp
+          cp -f evidence/* empirical-results/ud-vncorenlp/ 2>/dev/null || true
+          git add empirical-results/ud-vncorenlp
+          git diff --cached --quiet || git commit -m "Persist VLF v1.5 UD VnCoreNLP empirical evidence"
+          git push
