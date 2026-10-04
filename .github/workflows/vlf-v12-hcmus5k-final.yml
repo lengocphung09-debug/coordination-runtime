@@ -1,0 +1,36 @@
+name: VLF v12 HCMUS5K Final
+on:
+  push:
+    branches: [vlf-v12-hcmus5k-final]
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,urllib.request
+          u='https://huggingface.co/api/datasets/pqthinh232/vietnamese-correction-60k/parquet/default/test'
+          x=json.load(urllib.request.urlopen(u))
+          urls=x if isinstance(x,list) else x.get('urls',x.get('parquet_files',[]))
+          if urls and isinstance(urls[0],dict): urls=[z.get('url') or z.get('path') for z in urls]
+          open('URLS.txt','w').write('\n'.join(urls))
+          assert urls
+          PY
+          i=0
+          while IFS= read -r u; do
+            curl -L --fail --retry 3 -o "test_$i.parquet" "$u"
+            i=$((i+1))
+          done < URLS.txt
+          sha256sum test_*.parquet > SHA256SUMS.txt
+          wc -c test_*.parquet > SIZE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v12-hcmus5k-final
+          path: |
+            test_*.parquet
+            SHA256SUMS.txt
+            SIZE.txt
+            URLS.txt
+          retention-days: 1
