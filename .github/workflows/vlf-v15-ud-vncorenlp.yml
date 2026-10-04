@@ -74,7 +74,7 @@ jobs:
                   if cur: ps.append(cur); cur=[]
               elif not line.startswith("#"):
                   c=line.split("\t")
-                  if len(c)>=7 and c[0].isdigit(): cur.append(c)
+                  if len(c)>=6 and c[0].isdigit(): cur.append(c)
           assert len(gs)>0, "gold empty"
           assert len(ps)>0, "predictions empty"
           assert len(gs)==len(ps), f"sentence-count mismatch gold={len(gs)} pred={len(ps)}"
