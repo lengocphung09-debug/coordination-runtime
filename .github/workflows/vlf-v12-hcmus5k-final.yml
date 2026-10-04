@@ -15,7 +15,9 @@ jobs:
           x=json.load(urllib.request.urlopen(u))
           urls=x['default']['test']
           assert urls
-          open('URLS.txt','w').write('\\n'.join(urls)+'\\n')
+          with open('URLS.txt','w') as fh:
+              for item in urls:
+                  print(item,file=fh)
           PY
           i=0
           while IFS= read -r u; do
