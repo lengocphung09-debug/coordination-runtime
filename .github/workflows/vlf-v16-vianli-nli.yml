@@ -26,7 +26,7 @@ jobs:
           pathlib.Path("vianli_test.jsonl").write_bytes(raw.content)
           rows=[json.loads(x) for x in raw.text.splitlines() if x.strip()]
           assert len(rows)==1000
-          tok=AutoTokenizer.from_pretrained(MODEL)
+          tok=AutoTokenizer.from_pretrained("vinai/phobert-base")
           model=AutoModelForSequenceClassification.from_pretrained(MODEL); model.eval()
           print("id2label",model.config.id2label,"label2id",model.config.label2id)
           # Fail closed if model does not expose semantic NLI labels.
