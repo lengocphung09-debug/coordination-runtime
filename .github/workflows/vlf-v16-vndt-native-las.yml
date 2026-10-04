@@ -1,0 +1,96 @@
+name: vlf-v16-vndt-native-las
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - name: Fetch canonical native resources
+        run: |
+          git clone --depth 1 https://github.com/vncorenlp/VnCoreNLP.git vncorenlp
+          git clone --depth 1 https://github.com/datquocnguyen/VnDT.git vndt
+          mkdir -p evidence
+          git -C vncorenlp rev-parse HEAD > evidence/vncorenlp_commit.txt
+          git -C vndt rev-parse HEAD > evidence/vndt_commit.txt
+          sha256sum vncorenlp/VnCoreNLP-1.2.jar > evidence/resource_sha256.txt
+      - name: Reconstruct 1020 VnDT test sentences
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p=pathlib.Path("vndt/VnDTv1.1-gold-POS-tags-test.conll")
+          ss=[]; cur=[]
+          for line in p.read_text(encoding="utf-8").splitlines()+[""]:
+            if not line.strip():
+              if cur: ss.append(" ".join(x.replace("_"," ") for x in cur)); cur=[]
+            elif not line.startswith("#"):
+              c=line.split("\t")
+              if c and c[0].isdigit(): cur.append(c[1])
+          assert len(ss)==1020,len(ss)
+          pathlib.Path("input.txt").write_text("\n".join(ss)+"\n",encoding="utf-8")
+          pathlib.Path("evidence/test_sentence_count.txt").write_text(str(len(ss)))
+          PY
+      - name: Run VnCoreNLP
+        run: |
+          java -Xmx2g -jar vncorenlp/VnCoreNLP-1.2.jar -fin input.txt -fout predictions.txt -annotators wseg,pos,parse
+          test -s predictions.txt
+          cp predictions.txt evidence/predictions.txt
+          sha256sum input.txt predictions.txt >> evidence/resource_sha256.txt
+      - name: Score native VnDT UAS LAS fail-closed
+        run: |
+          python3 - <<'PY'
+          import pathlib,json
+          def read_gold(p):
+            ss=[];cur=[]
+            for line in pathlib.Path(p).read_text(encoding="utf-8").splitlines()+[""]:
+              if not line.strip():
+                if cur:ss.append(cur);cur=[]
+              elif not line.startswith("#"):
+                c=line.split("\t")
+                if c[0].isdigit():cur.append(c)
+            return ss
+          def read_pred(p):
+            ss=[];cur=[]
+            for line in pathlib.Path(p).read_text(encoding="utf-8").splitlines()+[""]:
+              if not line.strip():
+                if cur:ss.append(cur);cur=[]
+              else:
+                c=line.split("\t")
+                if len(c)>=6 and c[0].isdigit():cur.append(c)
+            return ss
+          gs=read_gold("vndt/VnDTv1.1-gold-POS-tags-test.conll"); ps=read_pred("predictions.txt")
+          # align by normalized surface because internal sentence splitting can differ
+          def surface(s): return " ".join(r[1].replace("_"," ") for r in s)
+          j=0; aligned=[]; unaligned=0
+          for g in gs:
+            target=surface(g); block=[]; acc=""
+            while j<len(ps) and len(acc)<len(target):
+              block+=ps[j]; acc=surface(block); j+=1
+              if acc==target:break
+            if acc==target and [x[1] for x in g]==[x[1] for x in block]: aligned.append((g,block))
+            else: unaligned+=1
+          uas=las=den=0
+          for g,p in aligned:
+            for a,b in zip(g,p):
+              # VnDT CoNLL HEAD=7th col, DEPREL=8th; VnCore 6-col HEAD=5th, DEPREL=6th.
+              try: gh=int(a[6]); ph=int(b[4])
+              except: continue
+              den+=1; uas+=(gh==ph)
+              las+=(gh==ph and a[7].lower()==b[5].lower())
+          assert den>0
+          rep={"gold_sentences":len(gs),"pred_sentence_blocks":len(ps),"exact_token_aligned_sentences":len(aligned),
+               "unaligned_gold_sentences":unaligned,"scored_tokens":den,"uas":uas/den,"las":las/den,
+               "schema":"VnDT native dependency labels; no UD label conversion",
+               "empirical_state":"MEASURED_BOUNDED_NATIVE_SCHEMA"}
+          pathlib.Path("evidence/VNDT_NATIVE_LAS_REPORT.json").write_text(json.dumps(rep,indent=2))
+          print(json.dumps(rep,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v16-vndt-native-las-evidence
+          path: evidence/
