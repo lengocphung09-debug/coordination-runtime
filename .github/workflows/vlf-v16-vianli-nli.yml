@@ -21,8 +21,9 @@ jobs:
           from transformers import AutoTokenizer,AutoModelForSequenceClassification
           from sklearn.metrics import accuracy_score,f1_score,confusion_matrix,classification_report
           MODEL="Inori612/phobert-base-vianli-ph"
-          TEST="https://huggingface.co/datasets/uitnlp/ViANLI/resolve/main/vianli_test.jsonl"\n          DEV="https://huggingface.co/datasets/uitnlp/ViANLI/resolve/main/vianli_dev.jsonl"
-          raw=requests.get(DATA,timeout=60); raw.raise_for_status()
+          TEST="https://huggingface.co/datasets/uitnlp/ViANLI/resolve/main/vianli_test.jsonl"
+          DEV="https://huggingface.co/datasets/uitnlp/ViANLI/resolve/main/vianli_dev.jsonl"
+          raw=requests.get(TEST,timeout=60); raw.raise_for_status()
           pathlib.Path("vianli_test.jsonl").write_bytes(raw.content)
           rows=[json.loads(x) for x in raw.text.splitlines() if x.strip()]
           assert len(rows)==1000
