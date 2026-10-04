@@ -11,8 +11,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json,urllib.request
-          u='https://huggingface.co/api/datasets/pqthinh232/vietnamese-correction-60k/parquet'
-          x=json.load(urllib.request.urlopen(u))
+          x=json.load(urllib.request.urlopen('https://huggingface.co/api/datasets/pqthinh232/vietnamese-correction-60k/parquet'))
           urls=x['default']['test']
           assert urls
           with open('URLS.txt','w') as fh:
@@ -24,8 +23,16 @@ jobs:
             curl -L --fail --retry 3 -o "test_$i.parquet" "$u"
             i=$((i+1))
           done < URLS.txt
-          sha256sum test_*.parquet > SHA256SUMS.txt\n          python -m pip install -q pyarrow pandas\n          python - <<'PY'\n          import pandas as pd,glob\n          d=pd.concat([pd.read_parquet(f) for f in sorted(glob.glob('test_*.parquet'))],ignore_index=True)\n          d.to_csv('test.csv',index=False)\n          print('ROWS',len(d),'COLS',list(d.columns))\n          PY\n          sha256sum test.csv > CSV_SHA256.txt
+          sha256sum test_*.parquet > SHA256SUMS.txt
           wc -c test_*.parquet > SIZE.txt
+          python -m pip install -q pyarrow pandas
+          python - <<'PY'
+          import pandas as pd,glob
+          d=pd.concat([pd.read_parquet(f) for f in sorted(glob.glob('test_*.parquet'))],ignore_index=True)
+          d.to_csv('test.csv',index=False)
+          print('ROWS',len(d),'COLS',list(d.columns))
+          PY
+          sha256sum test.csv > CSV_SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
           name: vlf-v12-hcmus5k-final
@@ -33,5 +40,7 @@ jobs:
             test_*.parquet
             SHA256SUMS.txt
             SIZE.txt
-            URLS.txt\n            test.csv\n            CSV_SHA256.txt
+            URLS.txt
+            test.csv
+            CSV_SHA256.txt
           retention-days: 1
