@@ -24,9 +24,12 @@ jobs:
           TEST="https://huggingface.co/datasets/uitnlp/ViANLI/resolve/main/vianli_test.jsonl"
           DEV="https://huggingface.co/datasets/uitnlp/ViANLI/resolve/main/vianli_dev.jsonl"
           raw=requests.get(TEST,timeout=60); raw.raise_for_status()
+          draw=requests.get(DEV,timeout=60); draw.raise_for_status()
           pathlib.Path("vianli_test.jsonl").write_bytes(raw.content)
+          pathlib.Path("vianli_dev.jsonl").write_bytes(draw.content)
           rows=[json.loads(x) for x in raw.text.splitlines() if x.strip()]
-          assert len(rows)==1000
+          dev=[json.loads(x) for x in draw.text.splitlines() if x.strip()]
+          assert len(rows)==1000 and len(dev)==1000
           tok=AutoTokenizer.from_pretrained("vinai/phobert-base")
           model=AutoModelForSequenceClassification.from_pretrained(MODEL); model.eval()
           print("id2label",model.config.id2label,"label2id",model.config.label2id)
