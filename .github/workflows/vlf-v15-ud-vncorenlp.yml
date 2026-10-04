@@ -1,0 +1,87 @@
+name: vlf-v15-ud-vncorenlp
+on:
+  push:
+    branches: [vlf-v15-ud-vncorenlp]
+  workflow_dispatch:
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Fetch canonical resources
+        run: |
+          git clone --depth 1 https://github.com/vncorenlp/VnCoreNLP.git vncorenlp
+          git clone --depth 1 https://github.com/UniversalDependencies/UD_Vietnamese-VTB.git ud
+          mkdir -p evidence
+          sha256sum vncorenlp/VnCoreNLP-1.2.jar > evidence/resource_sha256.txt
+          git -C vncorenlp rev-parse HEAD > evidence/vncorenlp_commit.txt
+          git -C ud rev-parse HEAD > evidence/ud_commit.txt
+      - name: Prepare raw test sentences
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+          p=next(pathlib.Path("ud").glob("*test.conllu"))
+          out=[]
+          for line in p.read_text(encoding="utf-8").splitlines():
+              if line.startswith("# text = "): out.append(line[9:])
+          pathlib.Path("input.txt").write_text("\n".join(out)+"\n",encoding="utf-8")
+          pathlib.Path("evidence/test_sentence_count.txt").write_text(str(len(out)))
+          PY
+      - name: Run independent VnCoreNLP predictions
+        run: |
+          java -Xmx2g -jar vncorenlp/VnCoreNLP-1.2.jar -fin input.txt -fout predictions.txt -annotators wseg,pos,parse
+          cp predictions.txt evidence/predictions.txt
+          sha256sum input.txt predictions.txt >> evidence/resource_sha256.txt
+      - name: Score bounded segmentation and aligned UAS
+        run: |
+          python3 - <<'PY'
+          import pathlib,json,re,hashlib
+          gold=next(pathlib.Path("ud").glob("*test.conllu")).read_text(encoding="utf-8")
+          # Gold sentences: integer-ID tokens only.
+          gs=[]; cur=[]
+          for line in gold.splitlines()+[""]:
+              if not line.strip():
+                  if cur: gs.append(cur); cur=[]
+              elif not line.startswith("#"):
+                  c=line.split("\t")
+                  if c[0].isdigit(): cur.append(c)
+          # VnCoreNLP output is CoNLL-like, blank-line separated.
+          ps=[]; cur=[]
+          for line in pathlib.Path("predictions.txt").read_text(encoding="utf-8").splitlines()+[""]:
+              if not line.strip():
+                  if cur: ps.append(cur); cur=[]
+              elif not line.startswith("#"):
+                  c=line.split("\t")
+                  if len(c)>=7 and c[0].isdigit(): cur.append(c)
+          n=min(len(gs),len(ps)); exact=0; uas_num=uas_den=0
+          for g,p in zip(gs[:n],ps[:n]):
+              gf=[x[1] for x in g]; pf=[x[1] for x in p]
+              # VnCore multi-syllable words use underscores; UD VTB commonly uses underscores too.
+              if gf==pf:
+                  exact+=1
+                  for a,b in zip(g,p):
+                      try: ph=int(b[5] if len(b)>5 else b[6])
+                      except: 
+                          try: ph=int(b[6])
+                          except: continue
+                      try: gh=int(a[6])
+                      except: continue
+                      uas_den+=1; uas_num+=ph==gh
+          report={"gold_sentences":len(gs),"pred_sentences":len(ps),"paired_sentences":n,
+                  "exact_token_sequence_sentences":exact,
+                  "exact_token_sequence_rate":exact/n if n else None,
+                  "aligned_uas_n":uas_den,"aligned_uas":uas_num/uas_den if uas_den else None,
+                  "construct_limits":"UAS only on sentences with exact token sequence; LAS not scored because VnCoreNLP and UD relation label inventories are not assumed identical.",
+                  "empirical_state":"MEASURED_BOUNDED_EXTERNAL_ENGINE"}
+          pathlib.Path("evidence/UD_VTB_VNCORENLP_REPORT.json").write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v15-ud-vncorenlp-evidence
+          path: evidence/
