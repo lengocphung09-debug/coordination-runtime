@@ -1,0 +1,26 @@
+name: VLF v11 OOD175 Final
+on:
+  push:
+    branches: [vlf-v11-ood175-final]
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 -o forum_25.jsonl "https://raw.githubusercontent.com/nrl-ai/nom-vn/main/benchmarks/data/spell_correction_eval_real/forum_25.jsonl"
+          curl -L --fail --retry 3 -o mobile_25.jsonl "https://raw.githubusercontent.com/nrl-ai/nom-vn/main/benchmarks/data/spell_correction_eval_real/mobile_25.jsonl"
+          curl -L --fail --retry 3 -o ocr_25.jsonl "https://raw.githubusercontent.com/nrl-ai/nom-vn/main/benchmarks/data/spell_correction_eval_real/ocr_25.jsonl"
+          curl -L --fail --retry 3 -o legal_real_25.jsonl "https://raw.githubusercontent.com/nrl-ai/nom-vn/main/benchmarks/data/spell_correction_eval_real/legal_real_25.jsonl"
+          curl -L --fail --retry 3 -o news_real_25.jsonl "https://raw.githubusercontent.com/nrl-ai/nom-vn/main/benchmarks/data/spell_correction_eval_real/news_real_25.jsonl"
+          curl -L --fail --retry 3 -o furniture_50.jsonl "https://raw.githubusercontent.com/nrl-ai/nom-vn/main/benchmarks/data/spell_correction_eval_real/furniture_50.jsonl"
+          sha256sum *.jsonl > SHA256SUMS.txt
+          wc -c -l *.jsonl > SIZE_ROWS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlf-v11-ood175-final
+          path: |
+            *.jsonl
+            SHA256SUMS.txt
+            SIZE_ROWS.txt
+          retention-days: 1
