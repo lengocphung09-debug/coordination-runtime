@@ -1,0 +1,43 @@
+name: DA10 local-agent smoke
+on:
+  push:
+    branches:
+      - experiment/da10-comp-emp-001
+  pull_request:
+    branches:
+      - main
+jobs:
+  agent-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [A7, A9, A10R, A11]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+      - name: Start Ollama
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do curl -sf http://127.0.0.1:11434/api/tags && break || sleep 2; done
+      - name: Pull identical local coding model
+        run: ollama pull qwen2.5-coder:1.5b
+      - name: Independent context smoke
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          arm=os.environ["ARM"]
+          prompt=f"""You are an isolated software-defect agent assigned to architecture {arm}.
+Return JSON only with keys arm, diagnosis, action.
+Task: Python function def add(a,b): return a-b fails add(2,3)==5. Diagnose and propose the minimum repair."""
+          data=json.dumps({"model":"qwen2.5-coder:1.5b","prompt":prompt,"stream":False,"format":"json"}).encode()
+          req=urllib.request.Request("http://127.0.0.1:11434/api/generate",data=data,headers={"Content-Type":"application/json"})
+          with urllib.request.urlopen(req,timeout=180) as r: out=json.load(r)
+          parsed=json.loads(out["response"])
+          assert parsed.get("arm")==arm, parsed
+          assert "diagnosis" in parsed and "action" in parsed, parsed
+          print(json.dumps(parsed,sort_keys=True))
+          PY
