@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: yaml/yaml-test-suite
-          ref: da267a5c4782e7361e82889e76c0dc7df0e1e870
+          ref: data-2022-01-17
           path: YAMLTestSuite
           persist-credentials: false
 
@@ -253,7 +253,7 @@ jobs:
             "Frozen_Corpora":{
               "JSONTestSuite":pathlib.Path("json-test-suite-commit.txt").read_text().strip(),
               "JSONSchemaTestSuite":pathlib.Path("json-schema-test-suite-commit.txt").read_text().strip(),
-              "YAMLTestSuite":pathlib.Path("yaml-test-suite-commit.txt").read_text().strip()
+              "YAMLTestSuite":pathlib.Path("yaml-test-suite-commit.txt").read_text().strip(),\n              "YAML_Data_Release":"data-2022-01-17"
             },
             "Validators":{
               "Python":"3.12",
