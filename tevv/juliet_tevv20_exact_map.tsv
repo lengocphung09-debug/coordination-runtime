@@ -1,0 +1,21 @@
+Item_ID	Display_Number	CWE	Canonical_Label	Corpus_Binding
+AIPF-000018	18	190	Integer Overflow or Wraparound	EXACT_CWE
+AIPF-000019	19	190	Signed Integer Overflow	PARENT_CWE_ONLY_DO_NOT_STRICT_CLOSE
+AIPF-000020	20	191	Integer Underflow — Wrap or Wraparound	EXACT_CWE
+AIPF-000021	21	369	Divide By Zero	EXACT_CWE
+AIPF-000024	24	681	Incorrect Conversion between Numeric Types	EXACT_CWE
+AIPF-000025	25	197	Numeric Truncation Error	EXACT_CWE
+AIPF-000027	27	476	NULL Pointer Dereference	EXACT_CWE
+AIPF-000029	29	126	Buffer Over-read	EXACT_CWE
+AIPF-000030	30	127	Buffer Under-read	EXACT_CWE
+AIPF-000035	35	121	Stack-based Buffer Overflow	EXACT_CWE
+AIPF-000036	36	122	Heap-based Buffer Overflow	EXACT_CWE
+AIPF-000037	37	124	Buffer Underwrite — Buffer Underflow	EXACT_CWE
+AIPF-000038	38	123	Write-what-where Condition	EXACT_CWE
+AIPF-000040	40	672	Operation on a Resource after Expiration or Release	EXACT_CWE
+AIPF-000041	41	416	Use After Free — UAF	EXACT_CWE
+AIPF-000042	42	415	Double Free	EXACT_CWE
+AIPF-000045	45	401	Missing Release of Memory after Effective Lifetime — Memory Leak	EXACT_CWE
+AIPF-000046	46	404	Improper Resource Shutdown or Release	EXACT_CWE
+AIPF-000047	47	665	Improper Initialization	EXACT_CWE
+AIPF-000057	57	561	Dead Code	EXACT_CWE
