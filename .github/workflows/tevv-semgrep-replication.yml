@@ -1,4 +1,4 @@
-name: AIPF TEVV8 Semgrep Exact-CWE Expansion
+name: AIPF TEVV9 Semgrep OWASP Exact-CWE Closure
 
 on:
   pull_request:
@@ -63,6 +63,7 @@ jobs:
             semgrep-rules/java/lang/security/servletresponse-writer-xss.yaml \
             semgrep-rules/java/lang/security/audit/xssrequestwrapper-is-insecure.yaml \
             semgrep-rules/java/lang/security/audit/xss/no-direct-response-writer.yaml \
+            semgrep-rules/java/lang/security/audit/crypto/weak-random.yaml \
             | tee semgrep-rule-sha256.txt
 
       - name: Run independent Semgrep SUT
@@ -84,6 +85,7 @@ jobs:
             --config semgrep-rules/java/lang/security/servletresponse-writer-xss.yaml \
             --config semgrep-rules/java/lang/security/audit/xssrequestwrapper-is-insecure.yaml \
             --config semgrep-rules/java/lang/security/audit/xss/no-direct-response-writer.yaml \
+            --config semgrep-rules/java/lang/security/audit/crypto/weak-random.yaml \
             --json \
             --output semgrep.json \
             BenchmarkJava/src/main/java/org/owasp/benchmark/testcode
@@ -99,7 +101,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tevv-semgrep-exact-cwe-expanded
+          name: tevv-semgrep-owasp-exact-cwe-closure
           if-no-files-found: warn
           retention-days: 7
           path: |
