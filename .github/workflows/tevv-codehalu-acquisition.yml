@@ -1,4 +1,4 @@
-name: AIPF TEVV11 CodeHalu Label Integrity
+name: AIPF TEVV11R1 CodeHalu Label Integrity
 
 on:
   pull_request:
@@ -110,7 +110,8 @@ jobs:
                   global_ids[(filename, r.get("id"))] += 1
                   solution_lengths.append(len(str(r.get("solutions", ""))))
 
-              uniform_expected = labels == Counter({expected_label: len(rows)})
+              source_display_label = expected_label.replace("_", " ")
+              uniform_expected = labels == Counter({source_display_label: len(rows)})
               source_defined = expected_label in source_mapping
               all_expected_pass = all_expected_pass and uniform_expected and source_defined and not missing_required
 
@@ -123,7 +124,9 @@ jobs:
 
               file_records.append({
                   "filename": filename,
-                  "expected_source_label": expected_label,
+                  "expected_source_identifier": expected_label,
+                  "expected_source_display_label": source_display_label,
+                  "representation_adapter": "LOSSLESS_UNDERSCORE_TO_SPACE",
                   "source_defined": source_defined,
                   "source_error_members": source_mapping.get(expected_label),
                   "row_count": len(rows),
@@ -170,7 +173,7 @@ jobs:
       - name: Upload label-integrity evidence
         uses: actions/upload-artifact@v4
         with:
-          name: tevv11-codehalu-label-integrity
+          name: tevv11r1-codehalu-label-integrity
           retention-days: 7
           path: |
             codehalu_label_integrity_audit.json
