@@ -1,0 +1,133 @@
+name: AIPF TEVV10 CodeHalu Acquisition
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv-codehalu-acquisition.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire-codehalu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout harness repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install acquisition dependency
+        run: python -m pip install 'huggingface_hub==0.35.3'
+
+      - name: Acquire frozen CodeHaluEval and inspect structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          import hashlib, json, os
+          from collections import Counter
+
+          repo_id = "Yuchen111/CodeHaluEval"
+          revision = "aef0c6245534c012f5aff11bfc70f2eaf584389e"
+          files = [
+              "data_compliance_hallucination.json",
+              "structural_access_hallucination.json",
+              "identification_hallucination.json",
+              "external_source_hallucination.json",
+              "physical_constraint_hallucination.json",
+              "calculate_boundary_hallucination.json",
+              "logic_deviation.json",
+              "logic_breakdown.json",
+          ]
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024*1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          manifest = {
+              "repo_id": repo_id,
+              "revision": revision,
+              "files": [],
+          }
+          for name in files:
+              path = hf_hub_download(
+                  repo_id=repo_id,
+                  filename=name,
+                  repo_type="dataset",
+                  revision=revision,
+              )
+              record = {
+                  "filename": name,
+                  "size_bytes": os.path.getsize(path),
+                  "sha256": sha256(path),
+              }
+              with open(path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+              record["top_level_type"] = type(data).__name__
+              record["top_level_count"] = len(data) if hasattr(data, "__len__") else None
+
+              if isinstance(data, list) and data:
+                  rows = data
+              elif isinstance(data, dict):
+                  # Preserve source structure without assuming one schema.
+                  record["top_level_keys"] = sorted(map(str, data.keys()))
+                  if all(isinstance(v, dict) for v in data.values()):
+                      rows = list(data.values())
+                  elif all(isinstance(v, list) for v in data.values()):
+                      rows = [x for v in data.values() for x in v if isinstance(x, dict)]
+                  else:
+                      rows = []
+              else:
+                  rows = []
+
+              if rows:
+                  key_counts = Counter()
+                  type_by_key = {}
+                  error_type_counts = Counter()
+                  for row in rows:
+                      if not isinstance(row, dict):
+                          continue
+                      for k, v in row.items():
+                          key_counts[str(k)] += 1
+                          type_by_key.setdefault(str(k), set()).add(type(v).__name__)
+                      if "error_type" in row:
+                          ev = row["error_type"]
+                          if isinstance(ev, dict):
+                              ev = ev.get("name") or json.dumps(ev, sort_keys=True)
+                          error_type_counts[str(ev)] += 1
+                  record["row_like_count"] = len(rows)
+                  record["keys_by_frequency"] = key_counts.most_common()
+                  record["types_by_key"] = {k: sorted(v) for k, v in type_by_key.items()}
+                  record["error_type_counts"] = error_type_counts.most_common()
+                  record["first_row_keys"] = sorted(map(str, rows[0].keys())) if isinstance(rows[0], dict) else []
+              manifest["files"].append(record)
+
+          with open("codehalu_acquisition_manifest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, ensure_ascii=False, indent=2)
+          with open("codehalu_revision.txt", "w", encoding="utf-8") as f:
+              f.write(revision + "\n")
+          print(json.dumps(manifest, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Hash acquisition evidence
+        run: sha256sum codehalu_acquisition_manifest.json codehalu_revision.txt | tee acquisition_evidence.sha256
+
+      - name: Upload acquisition evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv10-codehalu-acquisition
+          retention-days: 7
+          path: |
+            codehalu_acquisition_manifest.json
+            codehalu_revision.txt
+            acquisition_evidence.sha256
