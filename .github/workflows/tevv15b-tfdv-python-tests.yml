@@ -1,0 +1,98 @@
+name: AIPF TEVV15B TFDV Python Targets
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv15b-tfdv-python-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tfdv-python-targets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: tensorflow/data-validation
+          ref: aaa0ae1902262cac7b306358588d61e8521f3b25
+          path: TFDV
+          persist-credentials: false
+      - name: Install Bazel 7.7.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 https://github.com/bazelbuild/bazel/releases/download/7.7.0/bazel-7.7.0-linux-x86_64 -o bazel-7.7.0
+          chmod +x bazel-7.7.0
+          sha256sum bazel-7.7.0 > bazel.sha256
+      - name: Discover exact upstream targets
+        shell: bash
+        run: |
+          set +e
+          cd TFDV
+          ../bazel-7.7.0 query '//tensorflow_data_validation/...' 2>&1 | tee ../bazel-query-all.txt
+          rc=${PIPESTATUS[0]}
+          cd ..
+          grep -E 'validation_api_test|anomalies_util_test' bazel-query-all.txt | sort -u | tee discovered-targets.txt || true
+          echo "$rc" > bazel-query-exit.txt
+          exit 0
+      - name: Execute discovered upstream targets
+        shell: bash
+        run: |
+          set +e
+          mapfile -t targets < discovered-targets.txt
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo 125 | tee bazel-python-tests-exit.txt
+            echo "NO_MATCHING_BAZEL_TARGETS" | tee bazel-python-tests-output.txt
+            exit 0
+          fi
+          cd TFDV
+          ../bazel-7.7.0 test "${targets[@]}" --test_output=errors 2>&1 | tee ../bazel-python-tests-output.txt
+          rc=${PIPESTATUS[0]}
+          cd ..
+          echo "$rc" | tee bazel-python-tests-exit.txt
+          exit 0
+      - name: Build evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,pathlib,hashlib
+          def read(p):
+              q=pathlib.Path(p); return q.read_text(errors='replace').strip() if q.exists() else None
+          out={
+            "Revision":"AIPF-TEVV15B-TFDV-PYTHON-TARGETS-20261007",
+            "TFDV_Commit":"aaa0ae1902262cac7b306358588d61e8521f3b25",
+            "Bazel":"7.7.0",
+            "Query_Exit":read("bazel-query-exit.txt"),
+            "Discovered_Targets":read("discovered-targets.txt").splitlines() if read("discovered-targets.txt") else [],
+            "Test_Exit":read("bazel-python-tests-exit.txt"),
+            "Execution_State":"PASS" if read("bazel-python-tests-exit.txt")=="0" else "BLOCKED_OR_FAIL",
+            "No_Fabricated_Pass":True
+          }
+          pathlib.Path("tevv15b_manifest.json").write_text(json.dumps(out,indent=2),encoding="utf-8")
+          print(json.dumps(out,indent=2))
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv15b-tfdv-python-targets
+          retention-days: 7
+          path: |
+            bazel.sha256
+            bazel-query-all.txt
+            bazel-query-exit.txt
+            discovered-targets.txt
+            bazel-python-tests-output.txt
+            bazel-python-tests-exit.txt
+            tevv15b_manifest.json
+      - name: Enforce discovered target execution
+        if: always()
+        shell: bash
+        run: |
+          test -f bazel-python-tests-exit.txt
+          test "$(cat bazel-python-tests-exit.txt)" = "0"
