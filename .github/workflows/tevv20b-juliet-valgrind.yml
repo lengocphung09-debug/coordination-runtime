@@ -1,0 +1,152 @@
+name: AIPF TEVV20B Juliet Valgrind Replication
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv20b-juliet-valgrind.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  juliet-valgrind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: arichardson/juliet-test-suite-c
+          ref: f88433e3443648a17671398797a04ea1f8e1a274
+          path: adapter
+          persist-credentials: false
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y valgrind cmake
+          valgrind --version | tee valgrind-version.txt
+      - name: Acquire official NIST corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 'https://samate.nist.gov/SARD/downloads/test-suites/2017-10-01-juliet-test-suite-for-c-cplusplus-v1-3.zip' -o juliet-1.3.zip
+          test "$(sha256sum juliet-1.3.zip | awk '{print $1}')" = "ada9d7e1c323d283446df3f55bdee0d00bda1fed786785fe98764d58688f38eb"
+          sha256sum juliet-1.3.zip > juliet.sha256
+          unzip -q juliet-1.3.zip -d official
+      - name: Freeze deterministic memory-safety sample
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib,re,hashlib,shutil,json
+          cwes=[121,122,124,126,127,401,415,416,476,672]
+          root=pathlib.Path('official/C')
+          out=pathlib.Path('sample')
+          shutil.copytree(root/'testcasesupport',out/'testcasesupport')
+          shutil.copy2('adapter/CMakeLists.txt',out/'CMakeLists.txt')
+          manifest=[]
+          for cwe in cwes:
+              dirs=list((root/'testcases').glob(f'CWE{cwe}_*'))
+              if len(dirs)!=1:
+                  manifest.append({'CWE':cwe,'state':'MISSING_OR_AMBIGUOUS'}); continue
+              src=dirs[0]
+              groups={}
+              for p in src.rglob('*'):
+                  if not p.is_file(): continue
+                  m=re.match(r'^(CWE\d+_.+__.+_\d\d)',p.name)
+                  if m: groups.setdefault(m.group(1),[]).append(p)
+              chosen=sorted(groups,key=lambda x:(hashlib.sha256(x.encode()).hexdigest(),x))[:3]
+              dst=out/'testcases'/src.name; dst.mkdir(parents=True,exist_ok=True)
+              for g in chosen:
+                  for p in groups[g]:
+                      q=dst/p.relative_to(src); q.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,q)
+              shutil.copy2('adapter/CMakeLists.txt',dst/'CMakeLists.txt')
+              manifest.append({'CWE':cwe,'state':'SAMPLED','selected_groups':chosen})
+          pathlib.Path('tevv20b_sample_manifest.json').write_text(json.dumps(manifest,indent=2))
+          PY
+      - name: Build plain binaries
+        shell: bash
+        run: |
+          set +e
+          : > build-status.tsv
+          printf 'cwe\tconfigure_rc\tbuild_rc\n' >> build-status.tsv
+          for cwe in 121 122 124 126 127 401 415 416 476 672; do
+            src=$(find sample/testcases -maxdepth 1 -type d -name "CWE${cwe}_*" | head -1)
+            if [ -z "$src" ]; then printf '%s\t125\t125\n' "$cwe" >> build-status.tsv; continue; fi
+            b="build/CWE${cwe}"; mkdir -p "$b"
+            cmake -S "$src" -B "$b" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DOUTPUT_DIR=bin-valgrind -DCMAKE_C_FLAGS="-O0 -g" -DCMAKE_CXX_FLAGS="-O0 -g" > "configure-${cwe}.log" 2>&1
+            crc=$?
+            if [ "$crc" -eq 0 ]; then cmake --build "$b" --parallel 2 > "build-${cwe}.log" 2>&1; brc=$?; else brc=125; fi
+            printf '%s\t%s\t%s\n' "$cwe" "$crc" "$brc" >> build-status.tsv
+          done
+          exit 0
+      - name: Execute Valgrind and score
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib,subprocess,os,json,math,hashlib
+          cwes=[121,122,124,126,127,401,415,416,476,672]
+          logs=pathlib.Path('valgrind-logs'); logs.mkdir(exist_ok=True)
+          rows=[]
+          for cwe in cwes:
+              root=pathlib.Path(f'sample/bin-valgrind/CWE{cwe}')
+              for kind,gold in [('good',False),('bad',True)]:
+                  d=root/kind
+                  if not d.exists(): continue
+                  for exe in sorted(x for x in d.iterdir() if x.is_file() and os.access(x,os.X_OK)):
+                      cmd=['valgrind','--quiet','--error-exitcode=99','--leak-check=full',
+                           '--errors-for-leak-kinds=definite,indirect,possible',str(exe.resolve())]
+                      try:
+                          p=subprocess.run(cmd,input=b'',stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+                          timeout=False; rc=p.returncode
+                      except subprocess.TimeoutExpired as e:
+                          timeout=True; rc=124; p=type('X',(),{'stderr':e.stderr or b''})()
+                      pred=None if timeout else (rc==99)
+                      lf=logs/f'CWE{cwe}-{kind}-{exe.name}.stderr'; lf.write_bytes(p.stderr)
+                      rows.append({'CWE':cwe,'binary':exe.name,'gold_positive':gold,'prediction_positive':pred,
+                                   'timeout':timeout,'returncode':rc,'stderr_sha256':hashlib.sha256(p.stderr).hexdigest()})
+          pathlib.Path('tevv20b_execution.jsonl').write_text(''.join(json.dumps(x,separators=(',',':'))+'\n' for x in rows))
+          def wilson(k,n,z=1.959963984540054):
+              if not n:return [None,None]
+              p=k/n; den=1+z*z/n; c=(p+z*z/(2*n))/den
+              h=z*math.sqrt((p*(1-p)+z*z/(4*n))/n)/den
+              return [c-h,c+h]
+          metrics=[]
+          for cwe in cwes:
+              rr=[x for x in rows if x['CWE']==cwe and x['prediction_positive'] is not None]
+              tp=sum(x['gold_positive'] and x['prediction_positive'] for x in rr)
+              tn=sum((not x['gold_positive']) and (not x['prediction_positive']) for x in rr)
+              fp=sum((not x['gold_positive']) and x['prediction_positive'] for x in rr)
+              fn=sum(x['gold_positive'] and (not x['prediction_positive']) for x in rr)
+              metrics.append({'CWE':cwe,'N':len(rr),'timeouts':sum(x['CWE']==cwe and x['timeout'] for x in rows),
+                              'TP':tp,'TN':tn,'FP':fp,'FN':fn,
+                              'Precision':tp/(tp+fp) if tp+fp else None,
+                              'Recall':tp/(tp+fn) if tp+fn else None,
+                              'Specificity':tn/(tn+fp) if tn+fp else None,
+                              'Recall_Wilson95':wilson(tp,tp+fn),'Specificity_Wilson95':wilson(tn,tn+fp)})
+          out={'Revision':'AIPF-TEVV20B-JULIET-VALGRIND-20261007',
+               'Official_Corpus_SHA256':'ada9d7e1c323d283446df3f55bdee0d00bda1fed786785fe98764d58688f38eb',
+               'Independent_Instrument':'Valgrind Memcheck','Metrics':metrics,
+               'Sampling':'three groups per CWE selected by smallest SHA256(group_name), before outcomes',
+               'No_Posthoc_Threshold':True}
+          pathlib.Path('tevv20b_metrics.json').write_text(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv20b-juliet-valgrind
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            valgrind-version.txt
+            juliet.sha256
+            tevv20b_sample_manifest.json
+            build-status.tsv
+            configure-*.log
+            build-*.log
+            tevv20b_execution.jsonl
+            tevv20b_metrics.json
+            valgrind-logs/
