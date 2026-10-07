@@ -253,7 +253,8 @@ jobs:
             "Frozen_Corpora":{
               "JSONTestSuite":pathlib.Path("json-test-suite-commit.txt").read_text().strip(),
               "JSONSchemaTestSuite":pathlib.Path("json-schema-test-suite-commit.txt").read_text().strip(),
-              "YAMLTestSuite":pathlib.Path("yaml-test-suite-commit.txt").read_text().strip(),\n              "YAML_Data_Release":"data-2022-01-17"
+              "YAMLTestSuite":pathlib.Path("yaml-test-suite-commit.txt").read_text().strip(),
+              "YAML_Data_Release":"data-2022-01-17"
             },
             "Validators":{
               "Python":"3.12",
@@ -264,7 +265,8 @@ jobs:
               "ruamel.yaml":"0.19.1"
             },
             "No_Taxonomy_Authored_Detector":True,
-            "No_Posthoc_Tuning":True,\n            "Compatibility_Exclusion":"pattern.json excluded from shared two-validator subset because Python re lacks ECMAScript \\p Unicode-property escape semantics; exclusion is representation compatibility, not outcome-based threshold tuning."
+            "No_Posthoc_Tuning":True,
+            "Compatibility_Exclusion":"pattern.json excluded from shared two-validator subset because Python re lacks ECMAScript \\p Unicode-property escape semantics; exclusion is representation compatibility, not outcome-based threshold tuning."
           }
           pathlib.Path("tevv16_manifest.json").write_text(json.dumps(m,indent=2),encoding="utf-8")
           PY
