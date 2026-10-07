@@ -1,0 +1,89 @@
+name: AIPF TEVV17 CodeHalu Schema Probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv17-codehalu-schema-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codehalu-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Acquire one frozen CodeHaluEval shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://huggingface.co/datasets/Yuchen111/CodeHaluEval/resolve/aef0c6245534c012f5aff11bfc70f2eaf584389e/physical_constraint_hallucination.json?download=true'
+          curl -L --fail --retry 3 "$url" -o physical_constraint_hallucination.json
+          sha256sum physical_constraint_hallucination.json | tee codehalu-shard.sha256
+          test "$(sha256sum physical_constraint_hallucination.json | awk '{print $1}')" = "6ab4531225ec801529a4445fb4379ca565aeb6915b494910d5b8822bce2d081a"
+
+      - name: Inspect schema without altering records
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, collections, hashlib
+          p=pathlib.Path("physical_constraint_hallucination.json")
+          data=json.loads(p.read_text(encoding="utf-8"))
+          if isinstance(data, dict):
+              top_type="dict"
+              if all(isinstance(v,list) for v in data.values()):
+                  rows=[x for v in data.values() for x in v]
+              else:
+                  rows=list(data.values())
+          elif isinstance(data,list):
+              top_type="list"; rows=data
+          else:
+              top_type=type(data).__name__; rows=[]
+          dict_rows=[r for r in rows if isinstance(r,dict)]
+          key_counts=collections.Counter(k for r in dict_rows for k in r.keys())
+          samples=[]
+          for r in dict_rows[:3]:
+              samples.append({
+                  "keys":sorted(r.keys()),
+                  "value_types":{k:type(v).__name__ for k,v in r.items()},
+                  "string_lengths":{k:len(v) for k,v in r.items() if isinstance(v,str)}
+              })
+          target_keys=["deal_response","full_response","response","generated_code","model_output",
+                       "prediction","label","error_type","hallucination_type","input_output",
+                       "reference_solution","canonical_solution","code","prompt","input","output"]
+          presence={k:sum(k in r for r in dict_rows) for k in target_keys}
+          out={
+              "Revision":"AIPF-TEVV17-CODEHALU-PROBE-20261007",
+              "HF_Dataset":"Yuchen111/CodeHaluEval",
+              "Frozen_Commit":"aef0c6245534c012f5aff11bfc70f2eaf584389e",
+              "Shard":"physical_constraint_hallucination.json",
+              "Expected_SHA256":"6ab4531225ec801529a4445fb4379ca565aeb6915b494910d5b8822bce2d081a",
+              "Actual_SHA256":hashlib.sha256(p.read_bytes()).hexdigest(),
+              "Top_Level_Type":top_type,
+              "Row_Count":len(rows),
+              "Dict_Row_Count":len(dict_rows),
+              "Key_Counts":dict(key_counts),
+              "Target_Key_Presence":presence,
+              "First_Three_Record_Schema_Only":samples,
+              "Contains_Independent_Model_Output":any(presence[k]>0 for k in ["deal_response","full_response","response","generated_code","model_output","prediction"]),
+              "Contains_Explicit_Failure_Label":any(presence[k]>0 for k in ["label","error_type","hallucination_type"]),
+              "No_Record_Content_Emitted":True
+          }
+          pathlib.Path("tevv17_codehalu_probe.json").write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding="utf-8")
+          print(json.dumps(out,indent=2))
+          PY
+
+      - name: Upload probe evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv17-codehalu-probe
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            codehalu-shard.sha256
+            tevv17_codehalu_probe.json
