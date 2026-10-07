@@ -1,0 +1,82 @@
+name: AIPF TEVV6 Semgrep Replication
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv-semgrep-replication.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep-owasp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout harness repo
+        uses: actions/checkout@v4
+
+      - name: Checkout OWASP Benchmark
+        uses: actions/checkout@v4
+        with:
+          repository: OWASP-Benchmark/BenchmarkJava
+          path: BenchmarkJava
+
+      - name: Checkout frozen Semgrep rules
+        uses: actions/checkout@v4
+        with:
+          repository: semgrep/semgrep-rules
+          ref: a84ff9cc2453ca91d581380de4b8b3f272f6f4be
+          path: semgrep-rules
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frozen Semgrep SUT
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'semgrep==1.179.0'
+          semgrep --version | tee semgrep-version.txt
+
+      - name: Record immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C BenchmarkJava rev-parse HEAD | tee benchmark_commit.txt
+          git -C semgrep-rules rev-parse HEAD | tee semgrep_rules_commit.txt
+          sha256sum BenchmarkJava/expectedresults-1.2.csv | tee expectedresults.sha256
+          sha256sum             semgrep-rules/java/lang/security/httpservlet-path-traversal.yaml             semgrep-rules/java/jax-rs/security/jax-rs-path-traversal.yaml             semgrep-rules/java/lang/security/audit/tainted-cmd-from-http-request.yaml             semgrep-rules/java/lang/security/audit/command-injection-process-builder.yaml             semgrep-rules/java/lang/security/audit/command-injection-formatted-runtime-call.yaml             semgrep-rules/java/spring/security/injection/tainted-system-command.yaml             | tee semgrep-rule-sha256.txt
+
+      - name: Run independent Semgrep SUT
+        shell: bash
+        run: |
+          set -euo pipefail
+          semgrep             --metrics=off             --config semgrep-rules/java/lang/security/httpservlet-path-traversal.yaml             --config semgrep-rules/java/jax-rs/security/jax-rs-path-traversal.yaml             --config semgrep-rules/java/lang/security/audit/tainted-cmd-from-http-request.yaml             --config semgrep-rules/java/lang/security/audit/command-injection-process-builder.yaml             --config semgrep-rules/java/lang/security/audit/command-injection-formatted-runtime-call.yaml             --config semgrep-rules/java/spring/security/injection/tainted-system-command.yaml             --json             --output semgrep.json             BenchmarkJava/src/main/java/org/owasp/benchmark/testcode
+
+      - name: Hash outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f semgrep.json ] && sha256sum semgrep.json | tee semgrep-output.sha256 || true
+
+      - name: Upload raw replication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv-semgrep-raw
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            semgrep-version.txt
+            benchmark_commit.txt
+            semgrep_rules_commit.txt
+            expectedresults.sha256
+            semgrep-rule-sha256.txt
+            semgrep-output.sha256
+            semgrep.json
+            BenchmarkJava/expectedresults-1.2.csv
