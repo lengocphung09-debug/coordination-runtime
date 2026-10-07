@@ -1,0 +1,74 @@
+name: AIPF TEVV5 Independent SUT
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv-independent-sut.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  findsecbugs-owasp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout harness repo
+        uses: actions/checkout@v4
+
+      - name: Checkout OWASP Benchmark
+        uses: actions/checkout@v4
+        with:
+          repository: OWASP-Benchmark/BenchmarkJava
+          path: BenchmarkJava
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: BenchmarkJava/pom.xml
+
+      - name: Record immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C BenchmarkJava rev-parse HEAD | tee benchmark_commit.txt
+          sha256sum BenchmarkJava/expectedresults-1.2.csv | tee expectedresults.sha256
+          grep -n -A25 '<id>findsecbugs</id>' BenchmarkJava/pom.xml > findsecbugs-profile.txt
+
+      - name: Run independent FindSecBugs SUT
+        working-directory: BenchmarkJava
+        run: mvn -B -Pfindsecbugs compile
+
+      - name: Inventory SUT outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find BenchmarkJava/target -maxdepth 4 -type f -printf '%p\n' | sort > target-files.txt || true
+          find BenchmarkJava -type f \( -iname '*spotbugs*' -o -iname '*findbugs*' \) -print | sort > sut-report-files.txt || true
+          : > sut-report-sha256.txt
+          while IFS= read -r f; do
+            [ -f "$f" ] && sha256sum "$f" >> sut-report-sha256.txt
+          done < sut-report-files.txt
+
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv-findsecbugs-raw
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            benchmark_commit.txt
+            expectedresults.sha256
+            findsecbugs-profile.txt
+            target-files.txt
+            sut-report-files.txt
+            sut-report-sha256.txt
+            BenchmarkJava/expectedresults-1.2.csv
+            BenchmarkJava/target/spotbugsXml.xml
+            BenchmarkJava/target/*.xml
