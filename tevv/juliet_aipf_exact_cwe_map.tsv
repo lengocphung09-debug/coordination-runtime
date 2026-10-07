@@ -1,0 +1,38 @@
+Item_ID	Display_Number	CWE	Canonical_Label
+AIPF-000018	18	190	Integer Overflow or Wraparound
+AIPF-000019	19	190	Signed Integer Overflow
+AIPF-000020	20	191	Integer Underflow — Wrap or Wraparound
+AIPF-000021	21	369	Divide By Zero
+AIPF-000022	22	193	Off-by-one Error
+AIPF-000023	23	704	Incorrect Type Conversion or Cast
+AIPF-000024	24	681	Incorrect Conversion between Numeric Types
+AIPF-000025	25	197	Numeric Truncation Error
+AIPF-000026	26	1339	Insufficient Precision or Accuracy of a Real Number
+AIPF-000027	27	476	NULL Pointer Dereference
+AIPF-000028	28	125	Out-of-bounds Read — OOB Read
+AIPF-000029	29	126	Buffer Over-read
+AIPF-000030	30	127	Buffer Under-read
+AIPF-000031	31	787	Out-of-bounds Write — OOB Write
+AIPF-000032	32	786	Access of Memory Location Before Start of Buffer
+AIPF-000033	33	788	Access of Memory Location After End of Buffer
+AIPF-000034	34	120	Buffer Copy without Checking Size of Input — Classic Buffer Overflow
+AIPF-000035	35	121	Stack-based Buffer Overflow
+AIPF-000036	36	122	Heap-based Buffer Overflow
+AIPF-000037	37	124	Buffer Underwrite — Buffer Underflow
+AIPF-000038	38	123	Write-what-where Condition
+AIPF-000039	39	825	Expired Pointer Dereference
+AIPF-000040	40	672	Operation on a Resource after Expiration or Release
+AIPF-000041	41	416	Use After Free — UAF
+AIPF-000042	42	415	Double Free
+AIPF-000044	44	772	Resource Leak — Missing Release of Resource after Effective Lifetime
+AIPF-000045	45	401	Missing Release of Memory after Effective Lifetime — Memory Leak
+AIPF-000046	46	404	Improper Resource Shutdown or Release
+AIPF-000047	47	665	Improper Initialization
+AIPF-000048	48	909	Missing Initialization of Resource
+AIPF-000050	50	1419	Incorrect Initialization of Resource
+AIPF-000057	57	561	Dead Code
+AIPF-000058	58	362	Race Condition
+AIPF-000059	59	662	Improper Synchronization
+AIPF-000061	61	821	Incorrect Synchronization
+AIPF-000066	66	833	Deadlock
+AIPF-000108	108	116	Improper Encoding or Escaping of Output
