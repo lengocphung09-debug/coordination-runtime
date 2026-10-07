@@ -1,0 +1,215 @@
+name: AIPF TEVV15 TFDV Source-Native
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv15-tfdv-source-native.yml'
+      - 'tevv/tfdv_aipf_exact_map.tsv'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tfdv-source-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen TensorFlow Data Validation
+        uses: actions/checkout@v4
+        with:
+          repository: tensorflow/data-validation
+          ref: aaa0ae1902262cac7b306358588d61e8521f3b25
+          path: TFDV
+          persist-credentials: false
+
+      - name: Checkout frozen TensorFlow Metadata
+        uses: actions/checkout@v4
+        with:
+          repository: tensorflow/metadata
+          ref: f27894efb1ae226e14795ca7c7dfbce0d0eebabe
+          path: TFMD
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Record frozen inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C TFDV rev-parse HEAD | tee tfdv_commit.txt
+          git -C TFMD rev-parse HEAD | tee tfmd_commit.txt
+          sha256sum tevv/tfdv_aipf_exact_map.tsv | tee mapping.sha256
+          sha256sum TFMD/tensorflow_metadata/proto/v0/anomalies.proto | tee anomalies-proto.sha256
+          sha256sum TFDV/docs/anomalies.md | tee anomalies-docs.sha256
+
+      - name: Replay exact source-native oracle bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, json, pathlib, re, hashlib
+          root = pathlib.Path("TFDV")
+          meta = pathlib.Path("TFMD")
+          proto_path = meta / "tensorflow_metadata/proto/v0/anomalies.proto"
+          docs_path = root / "docs/anomalies.md"
+          proto = proto_path.read_text(encoding="utf-8", errors="replace")
+          docs = docs_path.read_text(encoding="utf-8", errors="replace")
+          rows = list(csv.DictReader(open("tevv/tfdv_aipf_exact_map.tsv", encoding="utf-8"), delimiter="\t"))
+          candidate_files = [
+              p for p in root.rglob("*")
+              if p.is_file() and p.suffix.lower() in {".cc",".h",".py",".md",".proto"}
+          ]
+          out=[]
+          for row in rows:
+              const=row["TFDV_Anomaly_Constant"]
+              rx=re.compile(r"\b"+re.escape(const)+r"\b")
+              test_files=[]
+              impl_files=[]
+              total_refs=0
+              for p in candidate_files:
+                  try:
+                      txt=p.read_text(encoding="utf-8", errors="replace")
+                  except Exception:
+                      continue
+                  n=len(rx.findall(txt))
+                  if not n:
+                      continue
+                  total_refs += n
+                  rel=str(p.relative_to(root))
+                  if "_test." in p.name or "/tests/" in ("/"+rel):
+                      test_files.append({"path":rel,"count":n})
+                  elif rel!="docs/anomalies.md":
+                      impl_files.append({"path":rel,"count":n})
+              proto_count=len(rx.findall(proto))
+              docs_count=len(rx.findall(docs))
+              state=(
+                  "SOURCE_NATIVE_ORACLE_BOUND"
+                  if proto_count>0 and docs_count>0 and len(test_files)>0 and len(impl_files)>0
+                  else "SOURCE_NATIVE_PARTIAL"
+              )
+              out.append({
+                  **row,
+                  "TFDV_Commit":"aaa0ae1902262cac7b306358588d61e8521f3b25",
+                  "TFMD_Commit":"f27894efb1ae226e14795ca7c7dfbce0d0eebabe",
+                  "Proto_Enum_Refs":proto_count,
+                  "Official_Docs_Refs":docs_count,
+                  "Implementation_Files":impl_files,
+                  "Upstream_Test_Files":test_files,
+                  "TFDV_Total_Refs":total_refs,
+                  "Source_Native_State":state
+              })
+          with open("tevv15_tfdv_source_native.jsonl","w",encoding="utf-8") as f:
+              for x in out:
+                  f.write(json.dumps(x,ensure_ascii=False,separators=(",",":"))+"\n")
+          closed=sum(x["Source_Native_State"]=="SOURCE_NATIVE_ORACLE_BOUND" for x in out)
+          summary={
+              "Revision":"AIPF-TEVV15-TFDV-SOURCE-NATIVE-20261007",
+              "Mapped_Items":len(out),
+              "Source_Native_Oracle_Bound":closed,
+              "Source_Native_Partial":len(out)-closed,
+              "Proto_Enum_Present":sum(x["Proto_Enum_Refs"]>0 for x in out),
+              "Official_Docs_Present":sum(x["Official_Docs_Refs"]>0 for x in out),
+              "Upstream_Test_Evidence_Present":sum(bool(x["Upstream_Test_Files"]) for x in out),
+              "Implementation_Evidence_Present":sum(bool(x["Implementation_Files"]) for x in out),
+              "Interpretation":"Exact upstream source/test binding; not yet equivalent to locally executed upstream test PASS."
+          }
+          pathlib.Path("tevv15_tfdv_source_native_summary.json").write_text(
+              json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8")
+          missing=[x["Item_ID"] for x in out if x["Proto_Enum_Refs"]==0]
+          if missing:
+              raise SystemExit("Missing frozen TFMD enum binding: "+",".join(missing))
+          print(json.dumps(summary,indent=2))
+          PY
+
+      - name: Install frozen Bazel 7.7.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3             https://github.com/bazelbuild/bazel/releases/download/7.7.0/bazel-7.7.0-linux-x86_64             -o bazel-7.7.0
+          chmod +x bazel-7.7.0
+          ./bazel-7.7.0 --version | tee bazel-version.txt
+          sha256sum bazel-7.7.0 | tee bazel-binary.sha256
+
+      - name: Execute upstream TFDV anomaly tests
+        id: bazel_tests
+        shell: bash
+        run: |
+          set +e
+          cd TFDV
+          ../bazel-7.7.0 test             //tensorflow_data_validation/anomalies:schema_anomalies_test             //tensorflow_data_validation/anomalies:feature_statistics_validator_test             //tensorflow_data_validation/anomalies:feature_util_test             //tensorflow_data_validation/anomalies:bool_domain_test             //tensorflow_data_validation/anomalies:float_domain_test             //tensorflow_data_validation/anomalies:int_domain_test             //tensorflow_data_validation/anomalies:dataset_constraints_util_test             //tensorflow_data_validation/anomalies:image_domain_test             //tensorflow_data_validation/anomalies:string_domain_test             --test_output=errors             2>&1 | tee ../bazel-test-output.txt
+          rc=${PIPESTATUS[0]}
+          cd ..
+          echo "$rc" | tee bazel-exit-code.txt
+          exit 0
+
+      - name: Build evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, hashlib, pathlib
+          def h(p):
+              q=pathlib.Path(p)
+              if not q.exists(): return None
+              x=hashlib.sha256(q.read_bytes()).hexdigest()
+              return x
+          rc=None
+          p=pathlib.Path("bazel-exit-code.txt")
+          if p.exists():
+              rc=int(p.read_text().strip())
+          m={
+              "Revision":"AIPF-TEVV15-TFDV-SOURCE-NATIVE-20261007",
+              "TFDV_Commit":pathlib.Path("tfdv_commit.txt").read_text().strip(),
+              "TFMD_Commit":pathlib.Path("tfmd_commit.txt").read_text().strip(),
+              "Bazel":"7.7.0",
+              "Bazel_Exit_Code":rc,
+              "Upstream_Test_Execution":("PASS" if rc==0 else "FAIL_OR_BLOCKED"),
+              "SHA256":{
+                  "mapping":h("tevv/tfdv_aipf_exact_map.tsv"),
+                  "source_native_jsonl":h("tevv15_tfdv_source_native.jsonl"),
+                  "source_native_summary":h("tevv15_tfdv_source_native_summary.json"),
+                  "bazel_test_output":h("bazel-test-output.txt"),
+                  "bazel_binary":h("bazel-7.7.0")
+              },
+              "No_Fabricated_Pass":True
+          }
+          pathlib.Path("tevv15_evidence_manifest.json").write_text(
+              json.dumps(m,indent=2),encoding="utf-8")
+          print(json.dumps(m,indent=2))
+          PY
+
+      - name: Upload raw TEVV15 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv15-tfdv-source-native
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            tfdv_commit.txt
+            tfmd_commit.txt
+            mapping.sha256
+            anomalies-proto.sha256
+            anomalies-docs.sha256
+            bazel-version.txt
+            bazel-binary.sha256
+            bazel-exit-code.txt
+            bazel-test-output.txt
+            tevv15_tfdv_source_native.jsonl
+            tevv15_tfdv_source_native_summary.json
+            tevv15_evidence_manifest.json
+            tevv/tfdv_aipf_exact_map.tsv
+
+      - name: Enforce upstream test gate
+        if: always()
+        shell: bash
+        run: |
+          test -f bazel-exit-code.txt
+          test "$(cat bazel-exit-code.txt)" = "0"
