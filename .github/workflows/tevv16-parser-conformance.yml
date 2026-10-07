@@ -73,10 +73,11 @@ jobs:
           git -C YAMLTestSuite rev-parse HEAD | tee yaml-test-suite-commit.txt
 
       - name: Run JSON and YAML external-gold campaign
+        id: campaign
         shell: bash
         run: |
-          set -euo pipefail
-          python - <<'PY'
+          set +e
+          python - <<'PY' 2>&1 | tee tevv16_campaign.log
           import json, pathlib, subprocess, math, hashlib, sys
           import yaml
           from ruamel.yaml import YAML
@@ -234,11 +235,15 @@ jobs:
           pathlib.Path("tevv16_parser_metrics.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
           print(json.dumps(result,indent=2))
           PY
+          rc=${PIPESTATUS[0]}
+          echo "$rc" | tee tevv16_campaign_exit_code.txt
+          exit 0
 
       - name: Build manifest and hashes
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           sha256sum             tevv16_json_parser_cases.jsonl             tevv16_jsonschema_cases.json             tevv16_ajv_cases.json             tevv16_yaml_cases.jsonl             tevv16_parser_metrics.json             python-packages.txt node-packages.json             > tevv16_file_hashes.sha256
           python - <<'PY'
           import json,pathlib,hashlib
@@ -264,6 +269,7 @@ jobs:
           PY
 
       - name: Upload raw TEVV16 evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tevv16-parser-conformance
@@ -284,3 +290,12 @@ jobs:
             tevv16_parser_metrics.json
             tevv16_file_hashes.sha256
             tevv16_manifest.json
+            tevv16_campaign.log
+            tevv16_campaign_exit_code.txt
+
+      - name: Enforce campaign execution gate
+        if: always()
+        shell: bash
+        run: |
+          test -f tevv16_campaign_exit_code.txt
+          test "$(cat tevv16_campaign_exit_code.txt)" = "0"
