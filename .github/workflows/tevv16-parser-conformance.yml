@@ -158,7 +158,8 @@ jobs:
           # Run Ajv 2020 against the same frozen case file.
           pathlib.Path("run_ajv.js").write_text(r'''
           const fs=require("fs");
-          const Ajv2020Module=require("ajv/dist/2020");\n          const Ajv2020=Ajv2020Module.default || Ajv2020Module;
+          const Ajv2020Module=require("ajv/dist/2020");
+          const Ajv2020=Ajv2020Module.default || Ajv2020Module;
           const ajv=new Ajv2020({strict:false,allErrors:true});
           const cases=JSON.parse(fs.readFileSync("tevv16_jsonschema_cases.json","utf8"));
           let out=[];
