@@ -1,0 +1,262 @@
+name: AIPF TEVV13 ToolFailBench Dual-Judge Calibration
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv-toolfail-replay.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-toolfail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout harness repo
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen ToolFailBench
+        uses: actions/checkout@v4
+        with:
+          repository: SoHarshh/ToolFailBench
+          ref: c8be7fb0f1d295b1e116d7bd0e01d4c5e91f1653
+          path: ToolFailBench
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frozen acquisition dependency
+        run: python -m pip install 'huggingface_hub==0.35.3'
+
+      - name: Acquire frozen published traces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id="SoHarshh/toolfailbench-traces",
+              repo_type="dataset",
+              revision="77ef18dadfc1ad96ce29c863f0913d990659432a",
+              local_dir="ToolFailBench/results/v5",
+          )
+          PY
+
+      - name: Record identities and trace manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C ToolFailBench rev-parse HEAD | tee toolfailbench_commit.txt
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          root = Path("ToolFailBench/results/v5")
+          rows = []
+          total = 0
+          for p in sorted(root.rglob("*")):
+              if not p.is_file():
+                  continue
+              h = hashlib.sha256()
+              with open(p, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024*1024), b""):
+                      h.update(chunk)
+              size = p.stat().st_size
+              total += size
+              rows.append({"path": str(p.relative_to(root)), "size_bytes": size, "sha256": h.hexdigest()})
+          manifest = {
+              "dataset_repo": "SoHarshh/toolfailbench-traces",
+              "dataset_revision": "77ef18dadfc1ad96ce29c863f0913d990659432a",
+              "file_count": len(rows),
+              "total_bytes": total,
+              "files": rows,
+          }
+          Path("toolfail_trace_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(json.dumps({"file_count": len(rows), "total_bytes": total}))
+          PY
+
+      - name: Replay decimal-reproducible validation
+        working-directory: ToolFailBench
+        shell: bash
+        run: |
+          set -euo pipefail
+          python evaluation/validate_results.py | tee ../toolfail_validate_results.txt
+
+      - name: Extract four-mode evidence counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, re
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          root = Path("ToolFailBench/results/v5")
+          eval_re = re.compile(r"^(.+?)_(\d{8}_\d{6})\.json$")
+          by_model = {}
+          for p in root.glob("*.json"):
+              if any(tok in p.name for tok in ("baseline","judge","_old_","_summary")):
+                  continue
+              m = eval_re.match(p.name)
+              if not m:
+                  continue
+              model, ts = m.group(1), m.group(2)
+              if model not in by_model or ts > by_model[model][0]:
+                  by_model[model] = (ts,p)
+
+          modes = ["tool_skip","result_ignore","output_fabrication","unnecessary_tool_use"]
+          per_model = {}
+          aggregate = Counter()
+          total_rows = 0
+          for model, (_, p) in sorted(by_model.items()):
+              rows = json.loads(p.read_text(encoding="utf-8"))
+              c = Counter(r.get("classification") for r in rows)
+              per_model[model] = {"n": len(rows), **{m:c[m] for m in modes}}
+              aggregate.update(c)
+              total_rows += len(rows)
+
+          out = {
+              "model_count": len(per_model),
+              "total_trace_rows": total_rows,
+              "failure_modes": modes,
+              "aggregate_rule_label_counts": {m: aggregate[m] for m in modes},
+              "per_model": per_model,
+              "epistemic_scope": "PUBLISHED_TRACE_REPLAY_AND_RULE_LABEL_RECOMPUTATION; NOT_NEW_MODEL_EXECUTION; NOT_INDEPENDENT_REJUDGING",
+          }
+          Path("toolfail_four_mode_replay.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+          print(json.dumps(out, indent=2))
+          PY
+
+      - name: Calibrate rule labels against dual-judge consensus
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, re
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          root = Path("ToolFailBench/results/v5")
+          eval_re = re.compile(r"^(.+?)_(\d{8}_\d{6})\.json$")
+          judge_re = re.compile(r"^(.+?)_judge_(qwen35_397b|glm47_fp8)_(\d{8}_\d{6})\.json$")
+
+          evals = {}
+          for p in root.glob("*.json"):
+              m = eval_re.match(p.name)
+              if m and not any(tok in p.name for tok in ("baseline","judge","_old_","_summary")):
+                  model, ts = m.group(1), m.group(2)
+                  if model not in evals or ts > evals[model][0]:
+                      evals[model] = (ts,p)
+
+          judges = defaultdict(dict)
+          for p in (root/"judge").glob("*.json"):
+              m = judge_re.match(p.name)
+              if not m:
+                  continue
+              model, judge, ts = m.group(1), m.group(2), m.group(3)
+              prev = judges[model].get(judge)
+              if prev is None or ts > prev[0]:
+                  judges[model][judge] = (ts,p)
+
+          modes = ["tool_skip","result_ignore","output_fabrication","unnecessary_tool_use"]
+
+          def wilson(k,n,z=1.959963984540054):
+              if n == 0:
+                  return [None,None]
+              p=k/n
+              den=1+z*z/n
+              center=(p+z*z/(2*n))/den
+              half=z*math.sqrt((p*(1-p)+z*z/(4*n))/n)/den
+              return [center-half,center+half]
+
+          agg={m:Counter() for m in modes}
+          per_model={}
+          eligible=conflict=null=0
+
+          for model,(_,ep) in sorted(evals.items()):
+              if model not in judges or set(judges[model]) != {"qwen35_397b","glm47_fp8"}:
+                  continue
+              rows=json.loads(ep.read_text())
+              qrows=json.loads(judges[model]["qwen35_397b"][1].read_text())
+              grows=json.loads(judges[model]["glm47_fp8"][1].read_text())
+              q={a["task_id"]:(a.get("judge") or {}).get("failure_mode") for a in qrows}
+              g={a["task_id"]:(a.get("judge") or {}).get("failure_mode") for a in grows}
+              mc={m:Counter() for m in modes}
+              m_eligible=m_conflict=m_null=0
+              for r in rows:
+                  tid=r["task"]["task_id"]
+                  ql,gl=q.get(tid),g.get(tid)
+                  if ql is None or gl is None:
+                      null+=1; m_null+=1; continue
+                  if ql != gl:
+                      conflict+=1; m_conflict+=1; continue
+                  eligible+=1; m_eligible+=1
+                  consensus=ql
+                  rule=r.get("classification")
+                  for mode in modes:
+                      if rule==mode and consensus==mode: key="TP"
+                      elif rule==mode and consensus!=mode: key="FP"
+                      elif rule!=mode and consensus==mode: key="FN"
+                      else: key="TN"
+                      agg[mode][key]+=1
+                      mc[mode][key]+=1
+              per_model[model]={
+                  "consensus_eligible":m_eligible,
+                  "judge_conflict":m_conflict,
+                  "judge_null":m_null,
+                  "confusion":{m:dict(mc[m]) for m in modes},
+              }
+
+          mode_metrics={}
+          for mode in modes:
+              c=agg[mode]
+              tp,fp,fn,tn=c["TP"],c["FP"],c["FN"],c["TN"]
+              precision=tp/(tp+fp) if tp+fp else None
+              recall=tp/(tp+fn) if tp+fn else None
+              specificity=tn/(tn+fp) if tn+fp else None
+              f1=2*precision*recall/(precision+recall) if precision is not None and recall is not None and precision+recall else None
+              mode_metrics[mode]={
+                  "TP":tp,"TN":tn,"FP":fp,"FN":fn,
+                  "precision":precision,"recall":recall,"specificity":specificity,"f1":f1,
+                  "precision_wilson95":wilson(tp,tp+fp),
+                  "recall_wilson95":wilson(tp,tp+fn),
+                  "specificity_wilson95":wilson(tn,tn+fp),
+              }
+
+          total=eligible+conflict+null
+          out={
+              "reference":"DUAL_LLM_JUDGE_CONSENSUS_EXCLUDING_RULE_CLASSIFIER",
+              "models":len(per_model),
+              "total_model_task_rows":total,
+              "consensus_eligible":eligible,
+              "judge_conflict":conflict,
+              "judge_null":null,
+              "consensus_coverage":eligible/total if total else None,
+              "mode_metrics":mode_metrics,
+              "per_model":per_model,
+              "epistemic_scope":"RULE_CLASSIFIER_CALIBRATION_AGAINST_TWO_JUDGES_WHEN_THEY_AGREE; NOT_HUMAN_GOLD; NOT_INDEPENDENT_IVV; DISAGREEMENTS_EXCLUDED_NOT_FORCED",
+          }
+          Path("toolfail_dual_judge_calibration.json").write_text(json.dumps(out,indent=2),encoding="utf-8")
+          print(json.dumps(out,indent=2))
+          PY
+
+      - name: Hash replay evidence
+        run: |
+          sha256sum             toolfailbench_commit.txt             toolfail_trace_manifest.json             toolfail_validate_results.txt             toolfail_four_mode_replay.json             toolfail_dual_judge_calibration.json             | tee toolfail_replay.sha256
+
+      - name: Upload replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv13-toolfail-calibration
+          retention-days: 7
+          path: |
+            toolfailbench_commit.txt
+            toolfail_trace_manifest.json
+            toolfail_validate_results.txt
+            toolfail_four_mode_replay.json
+            toolfail_dual_judge_calibration.json
+            toolfail_replay.sha256
