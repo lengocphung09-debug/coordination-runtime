@@ -1,0 +1,180 @@
+name: AIPF TEVV18 Unicode Normalization
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv18-unicode-normalization.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unicode-normalization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Acquire normative Unicode 18 normalization corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3             https://www.unicode.org/Public/18.0.0/ucd/NormalizationTest.txt             -o NormalizationTest.txt
+          sha256sum NormalizationTest.txt | tee normalization-test.sha256
+          python --version | tee python-version.txt
+          python - <<'PY' | tee python-unicode-version.txt
+          import unicodedata
+          print(unicodedata.unidata_version)
+          PY
+          java -version 2>&1 | tee java-version.txt
+
+      - name: Execute Python normalization conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import unicodedata,json,pathlib,math
+          def s(field):
+              return ''.join(chr(int(x,16)) for x in field.strip().split()) if field.strip() else ''
+          rows=[]
+          for line_no,line in enumerate(pathlib.Path('NormalizationTest.txt').read_text(encoding='utf-8').splitlines(),1):
+              line=line.split('#',1)[0].strip()
+              if not line or line.startswith('@'): continue
+              f=[x.strip() for x in line.split(';')]
+              if len(f)<5: continue
+              c1,c2,c3,c4,c5=map(s,f[:5])
+              checks=[
+                ('NFC','c1',c1,c2),('NFC','c2',c2,c2),('NFC','c3',c3,c2),('NFC','c4',c4,c4),('NFC','c5',c5,c4),
+                ('NFD','c1',c1,c3),('NFD','c2',c2,c3),('NFD','c3',c3,c3),('NFD','c4',c4,c5),('NFD','c5',c5,c5),
+                ('NFKC','c1',c1,c4),('NFKC','c2',c2,c4),('NFKC','c3',c3,c4),('NFKC','c4',c4,c4),('NFKC','c5',c5,c4),
+                ('NFKD','c1',c1,c5),('NFKD','c2',c2,c5),('NFKD','c3',c3,c5),('NFKD','c4',c4,c5),('NFKD','c5',c5,c5)
+              ]
+              for form,src_name,src,exp in checks:
+                  got=unicodedata.normalize(form,src)
+                  rows.append({"line":line_no,"form":form,"source":src_name,"pass":got==exp})
+          passed=sum(x['pass'] for x in rows)
+          out={
+            "Implementation":"Python unicodedata",
+            "Unicode_Data_Version":unicodedata.unidata_version,
+            "Checks":len(rows),"Pass":passed,"Fail":len(rows)-passed,
+            "Exact_Conformance_Rate":passed/len(rows) if rows else None
+          }
+          pathlib.Path('python-normalization-results.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          pathlib.Path('python-normalization-failures.jsonl').write_text(
+              ''.join(json.dumps(x,separators=(',',':'))+'\n' for x in rows if not x['pass']),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          PY
+
+      - name: Execute Java normalization conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > NormalizationConformance.java <<'JAVA'
+          import java.nio.file.*;
+          import java.text.Normalizer;
+          import java.util.*;
+          public class NormalizationConformance {
+            static String cp(String f) {
+              StringBuilder b=new StringBuilder();
+              f=f.trim();
+              if(f.isEmpty()) return "";
+              for(String x:f.split("\\s+")) b.appendCodePoint(Integer.parseInt(x,16));
+              return b.toString();
+            }
+            static int checks=0, pass=0;
+            static List<String> failures=new ArrayList<>();
+            static void test(int line,String form,String srcName,String src,String exp) {
+              checks++;
+              Normalizer.Form nf=Normalizer.Form.valueOf(form);
+              String got=Normalizer.normalize(src,nf);
+              if(got.equals(exp)) pass++;
+              else failures.add("{\"line\":"+line+",\"form\":\""+form+"\",\"source\":\""+srcName+"\"}");
+            }
+            public static void main(String[] args) throws Exception {
+              int lineNo=0;
+              for(String raw:Files.readAllLines(Path.of("NormalizationTest.txt"))) {
+                lineNo++;
+                String line=raw.split("#",2)[0].trim();
+                if(line.isEmpty() || line.startsWith("@")) continue;
+                String[] f=line.split(";");
+                if(f.length<5) continue;
+                String c1=cp(f[0]),c2=cp(f[1]),c3=cp(f[2]),c4=cp(f[3]),c5=cp(f[4]);
+                test(lineNo,"NFC","c1",c1,c2); test(lineNo,"NFC","c2",c2,c2); test(lineNo,"NFC","c3",c3,c2); test(lineNo,"NFC","c4",c4,c4); test(lineNo,"NFC","c5",c5,c4);
+                test(lineNo,"NFD","c1",c1,c3); test(lineNo,"NFD","c2",c2,c3); test(lineNo,"NFD","c3",c3,c3); test(lineNo,"NFD","c4",c4,c5); test(lineNo,"NFD","c5",c5,c5);
+                test(lineNo,"NFKC","c1",c1,c4); test(lineNo,"NFKC","c2",c2,c4); test(lineNo,"NFKC","c3",c3,c4); test(lineNo,"NFKC","c4",c4,c4); test(lineNo,"NFKC","c5",c5,c4);
+                test(lineNo,"NFKD","c1",c1,c5); test(lineNo,"NFKD","c2",c2,c5); test(lineNo,"NFKD","c3",c3,c5); test(lineNo,"NFKD","c4",c4,c5); test(lineNo,"NFKD","c5",c5,c5);
+              }
+              Files.writeString(Path.of("java-normalization-failures.jsonl"),String.join("\n",failures)+(failures.isEmpty()?"":"\n"));
+              String out="{\"Implementation\":\"java.text.Normalizer\",\"Checks\":"+checks+",\"Pass\":"+pass+",\"Fail\":"+(checks-pass)+",\"Exact_Conformance_Rate\":"+((double)pass/checks)+"}";
+              Files.writeString(Path.of("java-normalization-results.json"),out);
+              System.out.println(out);
+            }
+          }
+          JAVA
+          javac NormalizationConformance.java
+          java NormalizationConformance
+
+      - name: Build TEVV18 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib,pathlib,math
+          py=json.loads(pathlib.Path('python-normalization-results.json').read_text())
+          ja=json.loads(pathlib.Path('java-normalization-results.json').read_text())
+          def wilson(k,n,z=1.959963984540054):
+              p=k/n; den=1+z*z/n
+              c=(p+z*z/(2*n))/den
+              h=z*math.sqrt((p*(1-p)+z*z/(4*n))/n)/den
+              return [c-h,c+h]
+          out={
+            "Revision":"AIPF-TEVV18-UAX15-20261007",
+            "Item_ID":"AIPF-000510",
+            "Display_Number":510,
+            "Label":"Unicode Normalization Mismatch",
+            "Normative_Oracle":"Unicode 18.0.0 NormalizationTest.txt under UAX #15 C3",
+            "Corpus_SHA256":hashlib.sha256(pathlib.Path('NormalizationTest.txt').read_bytes()).hexdigest(),
+            "Python":py,
+            "Java":ja,
+            "Python_Wilson95_Exact":wilson(py["Pass"],py["Checks"]),
+            "Java_Wilson95_Exact":wilson(ja["Pass"],ja["Checks"]),
+            "Cross_Implementation_Replication":"EXECUTED",
+            "Measurement_State":"EMPIRICALLY_MEASURED_AGAINST_NORMATIVE_EXTERNAL_GOLD",
+            "Quality_Threshold":"NONE_PREREGISTERED",
+            "No_Fabricated_Pass":True
+          }
+          pathlib.Path('tevv18_metrics.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps(out,indent=2))
+          PY
+          sha256sum             NormalizationTest.txt             python-normalization-results.json python-normalization-failures.jsonl             java-normalization-results.json java-normalization-failures.jsonl             tevv18_metrics.json > tevv18_hashes.sha256
+
+      - name: Upload TEVV18 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv18-unicode-normalization
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            normalization-test.sha256
+            python-version.txt
+            python-unicode-version.txt
+            java-version.txt
+            python-normalization-results.json
+            python-normalization-failures.jsonl
+            java-normalization-results.json
+            java-normalization-failures.jsonl
+            tevv18_metrics.json
+            tevv18_hashes.sha256
