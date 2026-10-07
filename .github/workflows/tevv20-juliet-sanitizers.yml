@@ -1,0 +1,222 @@
+name: AIPF TEVV20 Juliet Sanitizers
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv20-juliet-sanitizers.yml'
+      - 'tevv/juliet_tevv20_exact_map.tsv'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  juliet-sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout frozen execution adapter
+        uses: actions/checkout@v4
+        with:
+          repository: arichardson/juliet-test-suite-c
+          ref: f88433e3443648a17671398797a04ea1f8e1a274
+          path: adapter
+          persist-credentials: false
+
+      - name: Acquire official NIST corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3             'https://samate.nist.gov/SARD/downloads/test-suites/2017-10-01-juliet-test-suite-for-c-cplusplus-v1-3.zip'             -o juliet-1.3.zip
+          sha256sum juliet-1.3.zip | tee juliet.sha256
+          test "$(sha256sum juliet-1.3.zip | awk '{print $1}')" = "ada9d7e1c323d283446df3f55bdee0d00bda1fed786785fe98764d58688f38eb"
+          unzip -q juliet-1.3.zip -d official
+
+      - name: Create deterministic hash sample without changing source bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,pathlib,re,hashlib,shutil,json,collections
+          mapping=list(csv.DictReader(open('tevv/juliet_tevv20_exact_map.tsv',encoding='utf-8'),delimiter='\t'))
+          unique_cwes=sorted({int(r['CWE']) for r in mapping})
+          root=pathlib.Path('official/C')
+          sample=pathlib.Path('sample')
+          shutil.copytree(root/'testcasesupport',sample/'testcasesupport')
+          shutil.copy2('adapter/juliet-run.sh',sample/'juliet-run.sh')
+          shutil.copy2('adapter/CMakeLists.txt',sample/'CMakeLists.txt')
+          manifest=[]
+          for cwe in unique_cwes:
+              dirs=list((root/'testcases').glob(f'CWE{cwe}_*'))
+              if len(dirs)!=1:
+                  manifest.append({'CWE':cwe,'state':'DIRECTORY_AMBIGUOUS_OR_MISSING','dirs':[str(x) for x in dirs]})
+                  continue
+              src=dirs[0]
+              files=[p for p in src.rglob('*') if p.is_file()]
+              groups=collections.defaultdict(list)
+              for p in files:
+                  m=re.match(r'^(CWE\d+_.+__.+_\d\d)',p.name)
+                  if m:
+                      groups[m.group(1)].append(p)
+              chosen=sorted(groups,key=lambda x:(hashlib.sha256(x.encode()).hexdigest(),x))[:5]
+              dst=sample/'testcases'/src.name
+              dst.mkdir(parents=True,exist_ok=True)
+              for g in chosen:
+                  for p in groups[g]:
+                      rel=p.relative_to(src)
+                      q=dst/rel
+                      q.parent.mkdir(parents=True,exist_ok=True)
+                      shutil.copy2(p,q)
+              shutil.copy2('adapter/CMakeLists.txt',dst/'CMakeLists.txt')
+              manifest.append({
+                  'CWE':cwe,'state':'SAMPLED','official_directory':str(src.relative_to(root)),
+                  'sample_algorithm':'five executable groups with lexicographically smallest SHA256(group_name), before observing build/runtime outcomes',
+                  'selected_groups':chosen,
+                  'selected_source_files':sum(len(groups[g]) for g in chosen)
+              })
+          pathlib.Path('tevv20_sample_manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          PY
+          clang --version | tee clang-version.txt
+          gcc --version | head -1 | tee gcc-version.txt
+
+      - name: Build sampled binaries with Clang and GCC sanitizers
+        shell: bash
+        run: |
+          set +e
+          mkdir -p build-logs
+          : > build-status.tsv
+          printf 'toolchain\tcwe\tconfigure_rc\tbuild_rc\n' >> build-status.tsv
+          mapfile -t cwes < <(python - <<'PY'
+          import csv
+          print('\n'.join(sorted({r['CWE'] for r in csv.DictReader(open('tevv/juliet_tevv20_exact_map.tsv'),delimiter='\t')},key=int)))
+          PY
+          )
+          for tc in clang gcc; do
+            if [ "$tc" = clang ]; then cc=clang; cxx=clang++; else cc=gcc; cxx=g++; fi
+            for cwe in "${cwes[@]}"; do
+              src=$(find sample/testcases -maxdepth 1 -type d -name "CWE${cwe}_*" | head -1)
+              if [ -z "$src" ]; then
+                printf '%s\t%s\t125\t125\n' "$tc" "$cwe" >> build-status.tsv
+                continue
+              fi
+              b="build/${tc}/CWE${cwe}"
+              mkdir -p "$b"
+              cmake -S "$src" -B "$b"                 -DCMAKE_C_COMPILER="$cc" -DCMAKE_CXX_COMPILER="$cxx"                 -DOUTPUT_DIR="bin-${tc}"                 -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g"                 -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g"                 > "build-logs/${tc}-CWE${cwe}-configure.log" 2>&1
+              crc=$?
+              if [ "$crc" -eq 0 ]; then
+                cmake --build "$b" --parallel 2 > "build-logs/${tc}-CWE${cwe}-build.log" 2>&1
+                brc=$?
+              else
+                brc=125
+              fi
+              printf '%s\t%s\t%s\t%s\n' "$tc" "$cwe" "$crc" "$brc" >> build-status.tsv
+            done
+          done
+          exit 0
+
+      - name: Execute binaries and score sanitizer detection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,pathlib,subprocess,os,re,json,hashlib,math,collections
+          mapping=list(csv.DictReader(open('tevv/juliet_tevv20_exact_map.tsv',encoding='utf-8'),delimiter='\t'))
+          by_cwe=collections.defaultdict(list)
+          for r in mapping: by_cwe[int(r['CWE'])].append(r)
+          sig=re.compile(r'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:|double[- ]free|use-after-free',re.I)
+          rows=[]
+          logs=pathlib.Path('run-logs'); logs.mkdir(exist_ok=True)
+          for tc in ['clang','gcc']:
+              for cwe in sorted(by_cwe):
+                  root=pathlib.Path(f'sample/bin-{tc}/CWE{cwe}')
+                  for gold_name,gold in [('good',False),('bad',True)]:
+                      d=root/gold_name
+                      if not d.exists(): continue
+                      for exe in sorted(x for x in d.iterdir() if x.is_file() and os.access(x,os.X_OK)):
+                          env=os.environ.copy()
+                          env['ASAN_OPTIONS']='detect_leaks=1:halt_on_error=1:abort_on_error=1'
+                          env['UBSAN_OPTIONS']='halt_on_error=1:print_stacktrace=1'
+                          try:
+                              p=subprocess.run([str(exe.resolve())],input=b'',stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=2,env=env)
+                              timeout=False; rc=p.returncode; err=p.stderr
+                          except subprocess.TimeoutExpired as e:
+                              timeout=True; rc=124; err=e.stderr or b''
+                          pred=bool(sig.search(err.decode('utf-8',errors='replace'))) if not timeout else None
+                          lf=logs/f'{tc}-CWE{cwe}-{gold_name}-{exe.name}.stderr'
+                          lf.write_bytes(err)
+                          rows.append({
+                              'toolchain':tc,'CWE':cwe,'binary':exe.name,'gold_positive':gold,
+                              'prediction_positive':pred,'timeout':timeout,'returncode':rc,
+                              'stderr_sha256':hashlib.sha256(err).hexdigest(),'stderr_file':str(lf)
+                          })
+          pathlib.Path('tevv20_execution.jsonl').write_text(
+              ''.join(json.dumps(x,separators=(',',':'))+'\n' for x in rows),encoding='utf-8')
+          def wilson(k,n,z=1.959963984540054):
+              if not n:return [None,None]
+              p=k/n; den=1+z*z/n
+              c=(p+z*z/(2*n))/den
+              h=z*math.sqrt((p*(1-p)+z*z/(4*n))/n)/den
+              return [c-h,c+h]
+          metrics=[]
+          for tc in ['clang','gcc']:
+              for cwe in sorted(by_cwe):
+                  rr=[x for x in rows if x['toolchain']==tc and x['CWE']==cwe and x['prediction_positive'] is not None]
+                  tp=sum(x['gold_positive'] and x['prediction_positive'] for x in rr)
+                  tn=sum((not x['gold_positive']) and (not x['prediction_positive']) for x in rr)
+                  fp=sum((not x['gold_positive']) and x['prediction_positive'] for x in rr)
+                  fn=sum(x['gold_positive'] and (not x['prediction_positive']) for x in rr)
+                  prec=tp/(tp+fp) if tp+fp else None
+                  rec=tp/(tp+fn) if tp+fn else None
+                  spec=tn/(tn+fp) if tn+fp else None
+                  f1=2*prec*rec/(prec+rec) if prec is not None and rec is not None and prec+rec else None
+                  metrics.append({
+                      'toolchain':tc,'CWE':cwe,'eligible_runs':len(rr),
+                      'timeouts':sum(x['toolchain']==tc and x['CWE']==cwe and x['timeout'] for x in rows),
+                      'TP':tp,'TN':tn,'FP':fp,'FN':fn,'Precision':prec,'Recall':rec,'Specificity':spec,'F1':f1,
+                      'Precision_Wilson95':wilson(tp,tp+fp),'Recall_Wilson95':wilson(tp,tp+fn),
+                      'Specificity_Wilson95':wilson(tn,tn+fp)
+                  })
+          out={
+              'Revision':'AIPF-TEVV20-JULIET-SANITIZERS-20261007',
+              'Official_Corpus':'NIST SARD Juliet C/C++ 1.3 suite #112',
+              'Official_SHA256':'ada9d7e1c323d283446df3f55bdee0d00bda1fed786785fe98764d58688f38eb',
+              'Adapter_Commit':'f88433e3443648a17671398797a04ea1f8e1a274',
+              'Sampling':'5 executable groups per exact CWE selected by smallest SHA256(group_name), before outcome observation',
+              'Prediction_Rule':'positive only when sanitizer signature occurs; timeout excluded as environment-unobservable',
+              'Metrics':metrics,
+              'Item_Bindings':mapping,
+              'Strict_Close_Prohibition':['AIPF-000019 parent CWE-190 corpus does not separately bind signed-only subtype'],
+              'No_Posthoc_Threshold':True
+          }
+          pathlib.Path('tevv20_metrics.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
+          print(json.dumps({'runs':len(rows),'metrics':len(metrics),'timeouts':sum(x['timeout'] for x in rows)},indent=2))
+          PY
+
+      - name: Hash evidence
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          sha256sum juliet-1.3.zip tevv20_sample_manifest.json build-status.tsv tevv20_execution.jsonl tevv20_metrics.json > tevv20_hashes.sha256
+
+      - name: Upload TEVV20 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv20-juliet-sanitizers
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            juliet.sha256
+            clang-version.txt
+            gcc-version.txt
+            tevv20_sample_manifest.json
+            build-status.tsv
+            build-logs/
+            tevv20_execution.jsonl
+            tevv20_metrics.json
+            tevv20_hashes.sha256
+            run-logs/
+            tevv/juliet_tevv20_exact_map.tsv
