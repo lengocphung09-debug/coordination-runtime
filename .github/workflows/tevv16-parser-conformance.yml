@@ -1,0 +1,286 @@
+name: AIPF TEVV16 Parser Conformance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tevv16-parser-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parser-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen JSON parser corpus
+        uses: actions/checkout@v4
+        with:
+          repository: nst/JSONTestSuite
+          ref: 1ef36fa01286573e846ac449e8683f8833c5b26a
+          path: JSONTestSuite
+          persist-credentials: false
+
+      - name: Checkout frozen JSON Schema corpus
+        uses: actions/checkout@v4
+        with:
+          repository: json-schema-org/JSON-Schema-Test-Suite
+          ref: 5b0ee1613e45fcc2bddac00e07c19cd49b00d8a8
+          path: JSONSchemaTestSuite
+          persist-credentials: false
+
+      - name: Checkout frozen YAML corpus
+        uses: actions/checkout@v4
+        with:
+          repository: yaml/yaml-test-suite
+          ref: da267a5c4782e7361e82889e76c0dc7df0e1e870
+          path: YAMLTestSuite
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install frozen validators
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'jsonschema==4.26.0' 'PyYAML==6.0.3' 'ruamel.yaml==0.19.1'
+          npm init -y >/dev/null 2>&1
+          npm install 'ajv@8.20.0' >/dev/null
+          python -m pip freeze | sort > python-packages.txt
+          npm list --depth=0 --json > node-packages.json
+          python --version | tee python-version.txt
+          node --version | tee node-version.txt
+
+      - name: Record frozen corpus commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C JSONTestSuite rev-parse HEAD | tee json-test-suite-commit.txt
+          git -C JSONSchemaTestSuite rev-parse HEAD | tee json-schema-test-suite-commit.txt
+          git -C YAMLTestSuite rev-parse HEAD | tee yaml-test-suite-commit.txt
+
+      - name: Run JSON and YAML external-gold campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, subprocess, math, hashlib, sys
+          import yaml
+          from ruamel.yaml import YAML
+          from jsonschema import Draft202012Validator
+
+          def wilson(k,n,z=1.959963984540054):
+              if not n: return [None,None]
+              p=k/n; den=1+z*z/n
+              center=(p+z*z/(2*n))/den
+              half=z*math.sqrt((p*(1-p)+z*z/(4*n))/n)/den
+              return [center-half,center+half]
+
+          def score(rows):
+              tp=tn=fp=fn=0
+              for gold,pred in rows:
+                  if pred and gold: tp+=1
+                  elif pred and not gold: fp+=1
+                  elif not pred and gold: fn+=1
+                  else: tn+=1
+              precision=tp/(tp+fp) if tp+fp else None
+              recall=tp/(tp+fn) if tp+fn else None
+              specificity=tn/(tn+fp) if tn+fp else None
+              f1=2*precision*recall/(precision+recall) if precision is not None and recall is not None and precision+recall else None
+              return {
+                  "N":len(rows),"TP":tp,"TN":tn,"FP":fp,"FN":fn,
+                  "Precision":precision,"Recall":recall,"Specificity":specificity,"F1":f1,
+                  "Precision_Wilson95":wilson(tp,tp+fp),
+                  "Recall_Wilson95":wilson(tp,tp+fn),
+                  "Specificity_Wilson95":wilson(tn,tn+fp)
+              }
+
+          # AIPF-000530 — Malformed JSON.
+          py_rows=[]; node_rows=[]; json_details=[]
+          for p in sorted(pathlib.Path("JSONTestSuite/test_parsing").glob("*.json")):
+              if p.name.startswith("i_"): continue
+              gold_malformed=p.name.startswith("n_")
+              raw=p.read_bytes()
+              py_reject=False
+              try: json.loads(raw.decode("utf-8"))
+              except Exception: py_reject=True
+              node_script="try{JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.exit(0)}catch(e){process.exit(1)}"
+              rc=subprocess.run(["node","-e",node_script,str(p)],capture_output=True).returncode
+              node_reject=(rc!=0)
+              py_rows.append((gold_malformed,py_reject))
+              node_rows.append((gold_malformed,node_reject))
+              json_details.append({"case":p.name,"gold_malformed":gold_malformed,
+                                   "python_reject":py_reject,"node_reject":node_reject})
+          pathlib.Path("tevv16_json_parser_cases.jsonl").write_text(
+              "\n".join(json.dumps(x,separators=(",",":")) for x in json_details)+"\n",encoding="utf-8")
+
+          # AIPF-000531 — JSON Schema Violation, preregistered local/non-remote core files.
+          selected=[
+              "type.json","enum.json","const.json","required.json","properties.json",
+              "additionalProperties.json","minimum.json","maximum.json","minLength.json",
+              "maxLength.json","pattern.json","minItems.json","maxItems.json","uniqueItems.json",
+              "minProperties.json","maxProperties.json","multipleOf.json","allOf.json","anyOf.json",
+              "oneOf.json","not.json"
+          ]
+          py_schema_rows=[]; schema_cases=[]
+          root=pathlib.Path("JSONSchemaTestSuite/tests/draft2020-12")
+          for name in selected:
+              groups=json.loads((root/name).read_text(encoding="utf-8"))
+              for gi,g in enumerate(groups):
+                  schema=g["schema"]
+                  v=Draft202012Validator(schema)
+                  for ti,t in enumerate(g["tests"]):
+                      gold_violation=not bool(t["valid"])
+                      pred_violation=not v.is_valid(t["data"])
+                      py_schema_rows.append((gold_violation,pred_violation))
+                      schema_cases.append({
+                          "file":name,"group":gi,"test":ti,"description":t.get("description"),
+                          "schema":schema,"data":t["data"],"gold_violation":gold_violation,
+                          "python_jsonschema_violation":pred_violation
+                      })
+          pathlib.Path("tevv16_jsonschema_cases.json").write_text(
+              json.dumps(schema_cases,ensure_ascii=False),encoding="utf-8")
+
+          # Run Ajv 2020 against the same frozen case file.
+          pathlib.Path("run_ajv.js").write_text(r'''
+          const fs=require("fs");
+          const Ajv2020=require("ajv/dist/2020");
+          const ajv=new Ajv2020({strict:false,allErrors:true});
+          const cases=JSON.parse(fs.readFileSync("tevv16_jsonschema_cases.json","utf8"));
+          let out=[];
+          for(const c of cases){
+            let violation;
+            try {
+              const validate=ajv.compile(c.schema);
+              violation=!validate(c.data);
+            } catch(e) {
+              violation=null;
+            }
+            out.push({file:c.file,group:c.group,test:c.test,gold_violation:c.gold_violation,ajv_violation:violation});
+          }
+          fs.writeFileSync("tevv16_ajv_cases.json",JSON.stringify(out));
+          ''',encoding="utf-8")
+          subprocess.run(["node","run_ajv.js"],check=True)
+          ajv_cases=json.loads(pathlib.Path("tevv16_ajv_cases.json").read_text())
+          ajv_rows=[(x["gold_violation"],x["ajv_violation"]) for x in ajv_cases if x["ajv_violation"] is not None]
+          ajv_compile_errors=sum(x["ajv_violation"] is None for x in ajv_cases)
+
+          # AIPF-000532 — Malformed YAML.
+          ry=YAML(typ="safe")
+          pyyaml_rows=[]; ruamel_rows=[]; yaml_details=[]
+          case_dirs=[]
+          for p in pathlib.Path("YAMLTestSuite").rglob("in.yaml"):
+              case_dirs.append(p.parent)
+          for d in sorted(set(case_dirs)):
+              raw=(d/"in.yaml").read_text(encoding="utf-8",errors="replace")
+              gold_malformed=(d/"error").exists()
+              py_reject=False
+              try: yaml.safe_load(raw)
+              except Exception: py_reject=True
+              ru_reject=False
+              try: ry.load(raw)
+              except Exception: ru_reject=True
+              pyyaml_rows.append((gold_malformed,py_reject))
+              ruamel_rows.append((gold_malformed,ru_reject))
+              yaml_details.append({
+                  "case":str(d.relative_to("YAMLTestSuite")),"gold_malformed":gold_malformed,
+                  "pyyaml_reject":py_reject,"ruamel_reject":ru_reject
+              })
+          pathlib.Path("tevv16_yaml_cases.jsonl").write_text(
+              "\n".join(json.dumps(x,separators=(",",":")) for x in yaml_details)+"\n",encoding="utf-8")
+
+          result={
+              "Revision":"AIPF-TEVV16-PARSER-CONFORMANCE-20261007",
+              "Items":{
+                  "AIPF-000530":{
+                      "Label":"Malformed JSON",
+                      "Gold":"nst/JSONTestSuite y_/n_ contract; i_ excluded",
+                      "Python_json":score(py_rows),
+                      "Node_JSON_parse":score(node_rows),
+                      "Cross_SUT_Replication":"COMPLETE"
+                  },
+                  "AIPF-000531":{
+                      "Label":"JSON Schema Violation",
+                      "Gold":"JSON-Schema-Test-Suite draft2020-12 preregistered core files",
+                      "Python_jsonschema_4_26_0":score(py_schema_rows),
+                      "Ajv_8_20_0":score(ajv_rows),
+                      "Ajv_Compile_Excluded":ajv_compile_errors,
+                      "Cross_SUT_Replication":"COMPLETE_IF_NO_EXCLUDED_CASES" if ajv_compile_errors==0 else "PARTIAL"
+                  },
+                  "AIPF-000532":{
+                      "Label":"Malformed YAML",
+                      "Gold":"yaml/yaml-test-suite error marker",
+                      "PyYAML_6_0_3":score(pyyaml_rows),
+                      "ruamel_yaml_0_19_1":score(ruamel_rows),
+                      "Cross_SUT_Replication":"COMPLETE"
+                  }
+              },
+              "No_Posthoc_Threshold":True,
+              "Interpretation":"Confusion matrices measure parser/validator behavior against frozen external gold; no detector-quality PASS threshold is invented after observation."
+          }
+          pathlib.Path("tevv16_parser_metrics.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
+          print(json.dumps(result,indent=2))
+          PY
+
+      - name: Build manifest and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum             tevv16_json_parser_cases.jsonl             tevv16_jsonschema_cases.json             tevv16_ajv_cases.json             tevv16_yaml_cases.jsonl             tevv16_parser_metrics.json             python-packages.txt node-packages.json             > tevv16_file_hashes.sha256
+          python - <<'PY'
+          import json,pathlib,hashlib
+          m={
+            "Revision":"AIPF-TEVV16-PARSER-CONFORMANCE-20261007",
+            "Frozen_Corpora":{
+              "JSONTestSuite":pathlib.Path("json-test-suite-commit.txt").read_text().strip(),
+              "JSONSchemaTestSuite":pathlib.Path("json-schema-test-suite-commit.txt").read_text().strip(),
+              "YAMLTestSuite":pathlib.Path("yaml-test-suite-commit.txt").read_text().strip()
+            },
+            "Validators":{
+              "Python":"3.12",
+              "Node":"22",
+              "jsonschema":"4.26.0",
+              "Ajv":"8.20.0",
+              "PyYAML":"6.0.3",
+              "ruamel.yaml":"0.19.1"
+            },
+            "No_Taxonomy_Authored_Detector":True,
+            "No_Posthoc_Tuning":True
+          }
+          pathlib.Path("tevv16_manifest.json").write_text(json.dumps(m,indent=2),encoding="utf-8")
+          PY
+
+      - name: Upload raw TEVV16 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tevv16-parser-conformance
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            json-test-suite-commit.txt
+            json-schema-test-suite-commit.txt
+            yaml-test-suite-commit.txt
+            python-version.txt
+            node-version.txt
+            python-packages.txt
+            node-packages.json
+            tevv16_json_parser_cases.jsonl
+            tevv16_jsonschema_cases.json
+            tevv16_ajv_cases.json
+            tevv16_yaml_cases.jsonl
+            tevv16_parser_metrics.json
+            tevv16_file_hashes.sha256
+            tevv16_manifest.json
