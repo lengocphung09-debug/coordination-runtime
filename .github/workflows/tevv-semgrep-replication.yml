@@ -1,4 +1,4 @@
-name: AIPF TEVV6 Semgrep Replication
+name: AIPF TEVV8 Semgrep Exact-CWE Expansion
 
 on:
   pull_request:
@@ -49,13 +49,44 @@ jobs:
           git -C BenchmarkJava rev-parse HEAD | tee benchmark_commit.txt
           git -C semgrep-rules rev-parse HEAD | tee semgrep_rules_commit.txt
           sha256sum BenchmarkJava/expectedresults-1.2.csv | tee expectedresults.sha256
-          sha256sum             semgrep-rules/java/lang/security/httpservlet-path-traversal.yaml             semgrep-rules/java/jax-rs/security/jax-rs-path-traversal.yaml             semgrep-rules/java/lang/security/audit/tainted-cmd-from-http-request.yaml             semgrep-rules/java/lang/security/audit/command-injection-process-builder.yaml             semgrep-rules/java/lang/security/audit/command-injection-formatted-runtime-call.yaml             semgrep-rules/java/spring/security/injection/tainted-system-command.yaml             | tee semgrep-rule-sha256.txt
+          sha256sum \
+            semgrep-rules/java/lang/security/httpservlet-path-traversal.yaml \
+            semgrep-rules/java/jax-rs/security/jax-rs-path-traversal.yaml \
+            semgrep-rules/java/lang/security/audit/tainted-cmd-from-http-request.yaml \
+            semgrep-rules/java/lang/security/audit/command-injection-process-builder.yaml \
+            semgrep-rules/java/lang/security/audit/command-injection-formatted-runtime-call.yaml \
+            semgrep-rules/java/spring/security/injection/tainted-system-command.yaml \
+            semgrep-rules/java/lang/security/audit/sqli/tainted-sql-from-http-request.yaml \
+            semgrep-rules/java/lang/security/audit/sqli/jdbc-sqli.yaml \
+            semgrep-rules/java/lang/security/audit/formatted-sql-string.yaml \
+            semgrep-rules/java/lang/security/audit/jdbc-sql-formatted-string.yaml \
+            semgrep-rules/java/lang/security/servletresponse-writer-xss.yaml \
+            semgrep-rules/java/lang/security/audit/xssrequestwrapper-is-insecure.yaml \
+            semgrep-rules/java/lang/security/audit/xss/no-direct-response-writer.yaml \
+            | tee semgrep-rule-sha256.txt
 
       - name: Run independent Semgrep SUT
         shell: bash
         run: |
           set -euo pipefail
-          semgrep             --metrics=off             --config semgrep-rules/java/lang/security/httpservlet-path-traversal.yaml             --config semgrep-rules/java/jax-rs/security/jax-rs-path-traversal.yaml             --config semgrep-rules/java/lang/security/audit/tainted-cmd-from-http-request.yaml             --config semgrep-rules/java/lang/security/audit/command-injection-process-builder.yaml             --config semgrep-rules/java/lang/security/audit/command-injection-formatted-runtime-call.yaml             --config semgrep-rules/java/spring/security/injection/tainted-system-command.yaml             --json             --output semgrep.json             BenchmarkJava/src/main/java/org/owasp/benchmark/testcode
+          semgrep \
+            --metrics=off \
+            --config semgrep-rules/java/lang/security/httpservlet-path-traversal.yaml \
+            --config semgrep-rules/java/jax-rs/security/jax-rs-path-traversal.yaml \
+            --config semgrep-rules/java/lang/security/audit/tainted-cmd-from-http-request.yaml \
+            --config semgrep-rules/java/lang/security/audit/command-injection-process-builder.yaml \
+            --config semgrep-rules/java/lang/security/audit/command-injection-formatted-runtime-call.yaml \
+            --config semgrep-rules/java/spring/security/injection/tainted-system-command.yaml \
+            --config semgrep-rules/java/lang/security/audit/sqli/tainted-sql-from-http-request.yaml \
+            --config semgrep-rules/java/lang/security/audit/sqli/jdbc-sqli.yaml \
+            --config semgrep-rules/java/lang/security/audit/formatted-sql-string.yaml \
+            --config semgrep-rules/java/lang/security/audit/jdbc-sql-formatted-string.yaml \
+            --config semgrep-rules/java/lang/security/servletresponse-writer-xss.yaml \
+            --config semgrep-rules/java/lang/security/audit/xssrequestwrapper-is-insecure.yaml \
+            --config semgrep-rules/java/lang/security/audit/xss/no-direct-response-writer.yaml \
+            --json \
+            --output semgrep.json \
+            BenchmarkJava/src/main/java/org/owasp/benchmark/testcode
 
       - name: Hash outputs
         if: always()
@@ -68,7 +99,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tevv-semgrep-raw
+          name: tevv-semgrep-exact-cwe-expanded
           if-no-files-found: warn
           retention-days: 7
           path: |
