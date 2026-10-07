@@ -1,4 +1,4 @@
-name: AIPF TEVV10 CodeHalu Acquisition
+name: AIPF TEVV11 CodeHalu Label Integrity
 
 on:
   pull_request:
@@ -10,12 +10,19 @@ permissions:
   contents: read
 
 jobs:
-  acquire-codehalu:
+  audit-codehalu-labels:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Checkout harness repo
         uses: actions/checkout@v4
+
+      - name: Checkout frozen CodeHalu evaluator
+        uses: actions/checkout@v4
+        with:
+          repository: yuchen814/CodeHalu
+          ref: e60d6a2de6f8bdf9b71b96465591e600f26afa8e
+          path: CodeHalu
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,27 +32,29 @@ jobs:
       - name: Install acquisition dependency
         run: python -m pip install 'huggingface_hub==0.35.3'
 
-      - name: Acquire frozen CodeHaluEval and inspect structure
+      - name: Acquire frozen dataset and audit labels
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from huggingface_hub import hf_hub_download
-          import hashlib, json, os
-          from collections import Counter
+          import ast, hashlib, json, os, statistics
+          from collections import Counter, defaultdict
 
-          repo_id = "Yuchen111/CodeHaluEval"
-          revision = "aef0c6245534c012f5aff11bfc70f2eaf584389e"
-          files = [
-              "data_compliance_hallucination.json",
-              "structural_access_hallucination.json",
-              "identification_hallucination.json",
-              "external_source_hallucination.json",
-              "physical_constraint_hallucination.json",
-              "calculate_boundary_hallucination.json",
-              "logic_deviation.json",
-              "logic_breakdown.json",
-          ]
+          dataset_repo = "Yuchen111/CodeHaluEval"
+          dataset_revision = "aef0c6245534c012f5aff11bfc70f2eaf584389e"
+          evaluator_revision = "e60d6a2de6f8bdf9b71b96465591e600f26afa8e"
+          expected = {
+              "data_compliance_hallucination.json": "Data_Compliance_Hallucination",
+              "structural_access_hallucination.json": "Structural_Access_Hallucination",
+              "identification_hallucination.json": "Identification_Hallucination",
+              "external_source_hallucination.json": "External_Source_Hallucination",
+              "physical_constraint_hallucination.json": "Physical_Constraint_Hallucination",
+              "calculate_boundary_hallucination.json": "Calculate_Boundary_Hallucination",
+              "logic_deviation.json": "Logic_Deviation",
+              "logic_breakdown.json": "Logic_Breakdown",
+          }
+          required = {"id","task_id","test_case_id","question","solutions","difficulty","input","output","halu_type","fn_name","starter_code","url"}
 
           def sha256(path):
               h = hashlib.sha256()
@@ -54,80 +63,115 @@ jobs:
                       h.update(chunk)
               return h.hexdigest()
 
-          manifest = {
-              "repo_id": repo_id,
-              "revision": revision,
-              "files": [],
-          }
-          for name in files:
+          # Parse the frozen source taxonomy without importing/executing evaluator code.
+          eval_source = open("CodeHalu/eval.py", "r", encoding="utf-8").read()
+          tree = ast.parse(eval_source)
+          source_mapping = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == "programming_halus":
+                          source_mapping = ast.literal_eval(node.value)
+          if source_mapping is None:
+              raise RuntimeError("programming_halus not found in frozen evaluator")
+
+          global_ids = Counter()
+          global_case_keys = Counter()
+          file_records = []
+          total_rows = 0
+          all_expected_pass = True
+
+          for filename, expected_label in expected.items():
               path = hf_hub_download(
-                  repo_id=repo_id,
-                  filename=name,
+                  repo_id=dataset_repo,
+                  filename=filename,
                   repo_type="dataset",
-                  revision=revision,
+                  revision=dataset_revision,
               )
-              record = {
-                  "filename": name,
-                  "size_bytes": os.path.getsize(path),
-                  "sha256": sha256(path),
-              }
               with open(path, "r", encoding="utf-8") as f:
-                  data = json.load(f)
-              record["top_level_type"] = type(data).__name__
-              record["top_level_count"] = len(data) if hasattr(data, "__len__") else None
+                  rows = json.load(f)
+              if not isinstance(rows, list):
+                  raise RuntimeError(f"{filename}: top-level is not a list")
 
-              if isinstance(data, list) and data:
-                  rows = data
-              elif isinstance(data, dict):
-                  # Preserve source structure without assuming one schema.
-                  record["top_level_keys"] = sorted(map(str, data.keys()))
-                  if all(isinstance(v, dict) for v in data.values()):
-                      rows = list(data.values())
-                  elif all(isinstance(v, list) for v in data.values()):
-                      rows = [x for v in data.values() for x in v if isinstance(x, dict)]
-                  else:
-                      rows = []
-              else:
-                  rows = []
+              total_rows += len(rows)
+              labels = Counter(str(r.get("halu_type")) for r in rows)
+              missing_required = Counter()
+              ids = Counter()
+              case_keys = Counter()
+              solution_lengths = []
+              for r in rows:
+                  for k in required:
+                      if k not in r:
+                          missing_required[k] += 1
+                  ids[r.get("id")] += 1
+                  case_key = (r.get("task_id"), r.get("test_case_id"))
+                  case_keys[case_key] += 1
+                  global_case_keys[case_key] += 1
+                  global_ids[(filename, r.get("id"))] += 1
+                  solution_lengths.append(len(str(r.get("solutions", ""))))
 
-              if rows:
-                  key_counts = Counter()
-                  type_by_key = {}
-                  error_type_counts = Counter()
-                  for row in rows:
-                      if not isinstance(row, dict):
-                          continue
-                      for k, v in row.items():
-                          key_counts[str(k)] += 1
-                          type_by_key.setdefault(str(k), set()).add(type(v).__name__)
-                      if "error_type" in row:
-                          ev = row["error_type"]
-                          if isinstance(ev, dict):
-                              ev = ev.get("name") or json.dumps(ev, sort_keys=True)
-                          error_type_counts[str(ev)] += 1
-                  record["row_like_count"] = len(rows)
-                  record["keys_by_frequency"] = key_counts.most_common()
-                  record["types_by_key"] = {k: sorted(v) for k, v in type_by_key.items()}
-                  record["error_type_counts"] = error_type_counts.most_common()
-                  record["first_row_keys"] = sorted(map(str, rows[0].keys())) if isinstance(rows[0], dict) else []
-              manifest["files"].append(record)
+              uniform_expected = labels == Counter({expected_label: len(rows)})
+              source_defined = expected_label in source_mapping
+              all_expected_pass = all_expected_pass and uniform_expected and source_defined and not missing_required
 
-          with open("codehalu_acquisition_manifest.json", "w", encoding="utf-8") as f:
-              json.dump(manifest, f, ensure_ascii=False, indent=2)
-          with open("codehalu_revision.txt", "w", encoding="utf-8") as f:
-              f.write(revision + "\n")
-          print(json.dumps(manifest, ensure_ascii=False, indent=2))
+              sorted_lengths = sorted(solution_lengths)
+              def q(frac):
+                  if not sorted_lengths:
+                      return None
+                  idx = min(len(sorted_lengths)-1, round((len(sorted_lengths)-1)*frac))
+                  return sorted_lengths[idx]
+
+              file_records.append({
+                  "filename": filename,
+                  "expected_source_label": expected_label,
+                  "source_defined": source_defined,
+                  "source_error_members": source_mapping.get(expected_label),
+                  "row_count": len(rows),
+                  "sha256": sha256(path),
+                  "halu_type_counts": labels.most_common(),
+                  "uniform_expected_label": uniform_expected,
+                  "missing_required_key_counts": dict(missing_required),
+                  "duplicate_id_values": sum(1 for c in ids.values() if c > 1),
+                  "duplicate_task_test_pairs_within_file": sum(1 for c in case_keys.values() if c > 1),
+                  "solution_char_length": {
+                      "min": min(solution_lengths) if solution_lengths else None,
+                      "median": statistics.median(solution_lengths) if solution_lengths else None,
+                      "p95": q(0.95),
+                      "max": max(solution_lengths) if solution_lengths else None,
+                  },
+              })
+
+          audit = {
+              "dataset_repo": dataset_repo,
+              "dataset_revision": dataset_revision,
+              "evaluator_repo": "yuchen814/CodeHalu",
+              "evaluator_revision": evaluator_revision,
+              "eval_py_sha256": hashlib.sha256(eval_source.encode()).hexdigest(),
+              "source_programming_halus": source_mapping,
+              "total_rows": total_rows,
+              "expected_total_8883": total_rows == 8883,
+              "file_count": len(file_records),
+              "expected_file_count_8": len(file_records) == 8,
+              "file_records": file_records,
+              "cross_file_task_test_pairs_repeated": sum(1 for c in global_case_keys.values() if c > 1),
+              "unique_task_test_pairs": len(global_case_keys),
+              "label_integrity_gate": "PASS" if all_expected_pass and total_rows == 8883 else "FAIL",
+              "epistemic_limit": "LABEL_INTEGRITY_ONLY__NOT_RUNTIME_REPLAY__NOT_INDEPENDENT_VALIDATION",
+          }
+
+          with open("codehalu_label_integrity_audit.json", "w", encoding="utf-8") as f:
+              json.dump(audit, f, ensure_ascii=False, indent=2)
+          print(json.dumps(audit, ensure_ascii=False, indent=2))
           PY
 
-      - name: Hash acquisition evidence
-        run: sha256sum codehalu_acquisition_manifest.json codehalu_revision.txt | tee acquisition_evidence.sha256
+      - name: Hash audit evidence
+        run: sha256sum codehalu_label_integrity_audit.json CodeHalu/eval.py | tee codehalu_label_integrity.sha256
 
-      - name: Upload acquisition evidence
+      - name: Upload label-integrity evidence
         uses: actions/upload-artifact@v4
         with:
-          name: tevv10-codehalu-acquisition
+          name: tevv11-codehalu-label-integrity
           retention-days: 7
           path: |
-            codehalu_acquisition_manifest.json
-            codehalu_revision.txt
-            acquisition_evidence.sha256
+            codehalu_label_integrity_audit.json
+            codehalu_label_integrity.sha256
